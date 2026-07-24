@@ -15,3 +15,6 @@ A simple, fast, and lightweight input automation tool for Windows 10 and 11. Bui
 1. Go to the [Releases](https://github.com/EasyClicker/EasyClicker/releases) section.
 2. Download the latest `Setup.exe` or the Portable `.zip` archive.
 3. Launch the application and configure your hotkeys.
+
+> ⚠️ **Antivirus Notice (False Positive):**
+> Some antiviruses (like Windows Defender) may flag the installer or executable. This happens because the app uses global keyboard/mouse hooks (`pynput`) for hotkeys and is packed with PyInstaller. The program is 100% safe and open-source.
