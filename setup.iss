@@ -1,20 +1,20 @@
 [Setup]
 AppName=EasyClicker
-AppVersion=1.0.0
+AppVersion=1.0.1
 DefaultDirName={autopf}\EasyClicker
 DefaultGroupName=EasyClicker
 UninstallDisplayIcon={app}\EasyClicker.exe
 Compression=lzma
 SolidCompression=yes
 OutputDir=.\
-OutputBaseFilename=EasyClicker_Setup_v1.0.0
+OutputBaseFilename=EasyClicker_Setup_v1.0.1
 SetupIconFile=icon.ico
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "dist\EasyClicker.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "EasyClicker.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
