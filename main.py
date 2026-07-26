@@ -5,6 +5,8 @@ import ctypes
 import os
 import sys
 import json
+import math
+from PIL import Image, ImageDraw
 import customtkinter as ctk
 from pynput import mouse, keyboard
 from pynput.mouse import Button, Controller as MouseController
@@ -24,11 +26,54 @@ ctk.set_default_color_theme("blue")
 CONFIG_FILE = "easyclicker_config.json"
 
 
-# Функция для правильного поиска файлов внутри .exe и в обычном Python
+# Функция для точного поиска файлов в папке программы (в .py и в .exe)
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    if getattr(sys, 'frozen', False):
+        return os.path.join(os.path.dirname(sys.executable), relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+
+# Установка иконки для окна
+def set_window_icon(window):
+    icon_path = get_resource_path("icon.ico")
+    if os.path.exists(icon_path):
+        try:
+            window.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+
+# Генерация четкой векторной шестеренки без использования шрифтов/эмодзи
+def create_gear_icon(size=(16, 16), color="#E2E8F0"):
+    img_size = 128
+    img = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+    center = img_size / 2
+
+    # Зубья шестерни (4 скругленных прямоугольника, повернутые под разными углами)
+    tooth_len = 56
+    tooth_w = 18
+    for angle in [0, 45, 90, 135]:
+        rect = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(rect)
+        draw.rounded_rectangle(
+            [center - tooth_w / 2, center - tooth_len, center + tooth_w / 2, center + tooth_len],
+            radius=5, fill=color
+        )
+        rotated = rect.rotate(angle, resample=Image.BICUBIC, center=(center, center))
+        img = Image.alpha_composite(img, rotated)
+
+    draw = ImageDraw.Draw(img)
+    # Основное тело шестерни (круг)
+    body_r = 42
+    draw.ellipse([center - body_r, center - body_r, center + body_r, center + body_r], fill=color)
+
+    # Отверстие в центре
+    hole_r = 18
+    draw.ellipse([center - hole_r, center - hole_r, center + hole_r, center + hole_r], fill=(0, 0, 0, 0))
+
+    return ctk.CTkImage(light_image=img, dark_image=img, size=size)
 
 
 # Карта раскладки RU -> EN
@@ -102,12 +147,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self.resizable(False, False)
         self.attributes("-topmost", True)
 
-        icon_path = get_resource_path("icon.ico")
-        if os.path.exists(icon_path):
-            try:
-                self.iconbitmap(icon_path)
-            except Exception:
-                pass
+        # Применение иконки
+        set_window_icon(self)
+        self.after(100, lambda: set_window_icon(self))
 
         self.grid_columnconfigure(0, weight=1)
 
@@ -157,13 +199,9 @@ class EasyClicker(ctk.CTk):
         self.selected_preset = "Normal (100ms)"
         self.settings_window = None
 
-        # Поиск и установка иконки через динамический путь
-        icon_path = get_resource_path("icon.ico")
-        if os.path.exists(icon_path):
-            try:
-                self.iconbitmap(icon_path)
-            except Exception:
-                pass
+        # Установка иконки приложения
+        set_window_icon(self)
+        self.after(100, lambda: set_window_icon(self))
 
         self.mouse_ctrl = MouseController()
         self.kb_ctrl = KeyboardController()
@@ -196,9 +234,12 @@ class EasyClicker(ctk.CTk):
         header = ctk.CTkFrame(self, height=45, corner_radius=0, fg_color="transparent")
         header.pack(fill="x", padx=15, pady=(10, 0))
 
+        # Генерация чистой иконки шестерни для кнопки
+        gear_img = create_gear_icon(size=(16, 16), color="#FFFFFF")
+
         self.settings_btn = ctk.CTkButton(
-            header, text="⚙ Settings", width=100, fg_color="#334155",
-            hover_color="#475569", command=self._open_settings
+            header, text=" Settings", image=gear_img, compound="left",
+            width=110, fg_color="#334155", hover_color="#475569", command=self._open_settings
         )
         self.settings_btn.pack(side="left")
 
