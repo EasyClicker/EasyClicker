@@ -5,3 +5,5 @@ build/
 dist/
 easyclicker_config.json
 App/
+setup.iss
+
