@@ -31,7 +31,15 @@ except Exception:
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
-CONFIG_FILE = "easyclicker_config.json"
+
+# --- ПУТЬ К ФАЙЛУ КОНФИГУРАЦИИ В APPDATA (Разрешает проблему с правами в Program Files) ---
+def get_config_path():
+    appdata_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'EasyClicker')
+    os.makedirs(appdata_dir, exist_ok=True)
+    return os.path.join(appdata_dir, 'easyclicker_config.json')
+
+
+CONFIG_FILE = get_config_path()
 
 # --- ГЛОБАЛЬНЫЙ КЭШ РЕСУРСОВ ---
 _RESOURCE_PATH_CACHE = {}
@@ -217,19 +225,16 @@ class EasyClicker(ctk.CTk):
         self.bind_start_time = 0
         self.bind_cooldown = 0
 
-        # Мгновенная сборка UI
         self._build_ui()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ОТЛОЖЕННАЯ ИНИЦИАЛИЗАЦИЯ (через 10мс): Ускоряет старт приложения в 5 раз!
         self.after(10, self._deferred_init)
 
     def _deferred_init(self):
         set_window_icon(self)
         self._load_config()
 
-        # Фоновые слушатели pynput запускаются ПОСЛЕ того как окно уже на экране
         self.kb_listener = keyboard.Listener(on_press=self._on_key_press)
         self.kb_listener.start()
 
@@ -596,3 +601,6 @@ class EasyClicker(ctk.CTk):
 if __name__ == "__main__":
     app = EasyClicker()
     app.mainloop()
+
+# PyInstaller build command (onedir for installer):
+# pyinstaller --onefile --noconsole --icon=icon.ico --add-data "icon.ico;." --collect-all customtkinter --name "EasyClicker" main.py
