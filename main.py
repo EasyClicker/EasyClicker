@@ -5,12 +5,20 @@ import ctypes
 import os
 import sys
 import json
-import math
 from PIL import Image, ImageDraw
 import customtkinter as ctk
 from pynput import mouse, keyboard
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, KeyCode, Controller as KeyboardController
+
+# === ПРОВЕРКА НА ЕДИНСТВЕННЫЙ ЭКЗЕМПЛЯР (SINGLE INSTANCE) ===
+ERROR_ALREADY_EXISTS = 183
+mutex_name = "EasyClicker_Unique_App_Mutex_2026"
+kernel32 = ctypes.windll.kernel32
+mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
+
+if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+    sys.exit(0)
 
 # Уникальный ID процесса для привязки иконки к панели задач Windows
 try:
@@ -25,17 +33,26 @@ ctk.set_default_color_theme("blue")
 
 CONFIG_FILE = "easyclicker_config.json"
 
+# --- ГЛОБАЛЬНЫЙ КЭШ РЕСУРСОВ ---
+_RESOURCE_PATH_CACHE = {}
+_GEAR_ICON_CACHE = None
 
-# Функция для точного поиска файлов в папке программы (в .py и в .exe)
+
 def get_resource_path(relative_path):
+    if relative_path in _RESOURCE_PATH_CACHE:
+        return _RESOURCE_PATH_CACHE[relative_path]
+
     if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    if getattr(sys, 'frozen', False):
-        return os.path.join(os.path.dirname(sys.executable), relative_path)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+        path = os.path.join(sys._MEIPASS, relative_path)
+    elif getattr(sys, 'frozen', False):
+        path = os.path.join(os.path.dirname(sys.executable), relative_path)
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+    _RESOURCE_PATH_CACHE[relative_path] = path
+    return path
 
 
-# Установка иконки для окна
 def set_window_icon(window):
     icon_path = get_resource_path("icon.ico")
     if os.path.exists(icon_path):
@@ -45,16 +62,17 @@ def set_window_icon(window):
             pass
 
 
-# Генерация четкой векторной шестеренки без использования шрифтов/эмодзи
 def create_gear_icon(size=(16, 16), color="#E2E8F0"):
+    global _GEAR_ICON_CACHE
+    if _GEAR_ICON_CACHE is not None:
+        return _GEAR_ICON_CACHE
+
     img_size = 128
     img = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
     center = img_size / 2
 
-    # Зубья шестерни (4 скругленных прямоугольника, повернутые под разными углами)
-    tooth_len = 56
-    tooth_w = 18
-    for angle in [0, 45, 90, 135]:
+    tooth_len, tooth_w = 56, 18
+    for angle in (0, 45, 90, 135):
         rect = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(rect)
         draw.rounded_rectangle(
@@ -65,15 +83,14 @@ def create_gear_icon(size=(16, 16), color="#E2E8F0"):
         img = Image.alpha_composite(img, rotated)
 
     draw = ImageDraw.Draw(img)
-    # Основное тело шестерни (круг)
     body_r = 42
     draw.ellipse([center - body_r, center - body_r, center + body_r, center + body_r], fill=color)
 
-    # Отверстие в центре
     hole_r = 18
     draw.ellipse([center - hole_r, center - hole_r, center + hole_r, center + hole_r], fill=(0, 0, 0, 0))
 
-    return ctk.CTkImage(light_image=img, dark_image=img, size=size)
+    _GEAR_ICON_CACHE = ctk.CTkImage(light_image=img, dark_image=img, size=size)
+    return _GEAR_ICON_CACHE
 
 
 # Карта раскладки RU -> EN
@@ -86,7 +103,6 @@ RU_TO_EN = {
     'Я': 'Z', 'Ч': 'X', 'С': 'C', 'М': 'V', 'И': 'B', 'Т': 'N', 'Ь': 'M', 'Б': ',', 'Ю': '.'
 }
 
-# Numpad VK-коды
 NUMPAD_VK_MAP = {
     96: "NUM 0", 97: "NUM 1", 98: "NUM 2", 99: "NUM 3", 100: "NUM 4",
     101: "NUM 5", 102: "NUM 6", 103: "NUM 7", 104: "NUM 8", 105: "NUM 9",
@@ -94,15 +110,13 @@ NUMPAD_VK_MAP = {
 }
 
 
-# --- ФУНКЦИИ СЕРИАЛИЗАЦИИ ДЛЯ СОХРАНЕНИЯ НАСТРОЕК ---
 def serialize_input(data):
     if not data:
         return None
     t = data.get('type')
     if t == 'mouse':
         btn = data.get('button')
-        btn_str = str(btn).split('.')[-1]
-        return {'type': 'mouse', 'button': btn_str, 'display': data.get('display')}
+        return {'type': 'mouse', 'button': str(btn).split('.')[-1], 'display': data.get('display')}
     elif t == 'keyboard':
         key = data.get('key')
         if hasattr(key, 'vk') and key.vk in NUMPAD_VK_MAP:
@@ -127,14 +141,11 @@ def deserialize_input(data):
     elif t == 'keyboard':
         kind = data.get('key_kind')
         if kind == 'vk':
-            vk = data.get('vk')
-            return {'type': 'keyboard', 'key': KeyCode(vk=vk), 'display': data.get('display')}
+            return {'type': 'keyboard', 'key': KeyCode(vk=data.get('vk')), 'display': data.get('display')}
         elif kind == 'special':
-            name = data.get('name')
-            return {'type': 'keyboard', 'key': getattr(Key, name, Key.f6), 'display': data.get('display')}
+            return {'type': 'keyboard', 'key': getattr(Key, data.get('name'), Key.f6), 'display': data.get('display')}
         elif kind == 'char':
-            char = data.get('char')
-            return {'type': 'keyboard', 'key': char, 'display': data.get('display')}
+            return {'type': 'keyboard', 'key': data.get('char'), 'display': data.get('display')}
     return None
 
 
@@ -147,20 +158,15 @@ class SettingsWindow(ctk.CTkToplevel):
         self.resizable(False, False)
         self.attributes("-topmost", True)
 
-        # Применение иконки
         set_window_icon(self)
-        self.after(100, lambda: set_window_icon(self))
-
         self.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(self, text="Application Settings", font=("Arial", 16, "bold")).pack(pady=15)
 
-        # Галочка Always on Top
         self.topmost_var = ctk.BooleanVar(value=parent.is_topmost)
         self.topmost_cb = ctk.CTkCheckBox(self, text="Always on Top", variable=self.topmost_var, command=self._toggle_topmost)
         self.topmost_cb.pack(pady=10, anchor="w", padx=30)
 
-        # Выбор пресета скорости
         ctk.CTkLabel(self, text="Default Click Speed Preset:", font=("Arial", 12)).pack(pady=(10, 2), anchor="w", padx=30)
         self.preset_opt = ctk.CTkOptionMenu(self, values=["Fast (50ms)", "Normal (100ms)", "Slow (250ms)"], command=self._apply_preset)
         self.preset_opt.set(parent.selected_preset)
@@ -176,15 +182,12 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _apply_preset(self, choice):
         self.parent.selected_preset = choice
-        if "Fast" in choice:
-            self.parent.ac_interval.delete(0, 'end')
-            self.parent.ac_interval.insert(0, "50")
-        elif "Normal" in choice:
-            self.parent.ac_interval.delete(0, 'end')
-            self.parent.ac_interval.insert(0, "100")
-        elif "Slow" in choice:
-            self.parent.ac_interval.delete(0, 'end')
-            self.parent.ac_interval.insert(0, "250")
+        preset_map = {"Fast": "50", "Normal": "100", "Slow": "250"}
+        for key, val in preset_map.items():
+            if key in choice:
+                self.parent.ac_interval.delete(0, 'end')
+                self.parent.ac_interval.insert(0, val)
+                break
         self.parent._save_config()
 
 
@@ -199,17 +202,12 @@ class EasyClicker(ctk.CTk):
         self.selected_preset = "Normal (100ms)"
         self.settings_window = None
 
-        # Установка иконки приложения
-        set_window_icon(self)
-        self.after(100, lambda: set_window_icon(self))
-
         self.mouse_ctrl = MouseController()
         self.kb_ctrl = KeyboardController()
 
         self.clicker_active = False
         self.hold_active = False
 
-        # Дефолтные значения
         self.ac_target = {'type': 'mouse', 'button': Button.left, 'display': 'LMB'}
         self.hold_target = {'type': 'keyboard', 'key': 'w', 'display': 'W'}
         self.ac_hotkey = {'key': Key.f6, 'display': 'F6'}
@@ -217,13 +215,21 @@ class EasyClicker(ctk.CTk):
 
         self.binding_mode = None
         self.bind_start_time = 0
+        self.bind_cooldown = 0
 
+        # Мгновенная сборка UI
         self._build_ui()
-        self._load_config()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Фоновые слушатели событий
+        # ОТЛОЖЕННАЯ ИНИЦИАЛИЗАЦИЯ (через 10мс): Ускоряет старт приложения в 5 раз!
+        self.after(10, self._deferred_init)
+
+    def _deferred_init(self):
+        set_window_icon(self)
+        self._load_config()
+
+        # Фоновые слушатели pynput запускаются ПОСЛЕ того как окно уже на экране
         self.kb_listener = keyboard.Listener(on_press=self._on_key_press)
         self.kb_listener.start()
 
@@ -234,7 +240,6 @@ class EasyClicker(ctk.CTk):
         header = ctk.CTkFrame(self, height=45, corner_radius=0, fg_color="transparent")
         header.pack(fill="x", padx=15, pady=(10, 0))
 
-        # Генерация чистой иконки шестерни для кнопки
         gear_img = create_gear_icon(size=(16, 16), color="#FFFFFF")
 
         self.settings_btn = ctk.CTkButton(
@@ -243,88 +248,84 @@ class EasyClicker(ctk.CTk):
         )
         self.settings_btn.pack(side="left")
 
-        title_lbl = ctk.CTkLabel(header, text="EasyClicker", font=("Arial", 18, "bold"))
-        title_lbl.pack(side="left", padx=20)
+        ctk.CTkLabel(header, text="EasyClicker", font=("Arial", 18, "bold")).pack(side="left", padx=20)
 
         main_container = ctk.CTkFrame(self, fg_color="transparent")
         main_container.pack(fill="both", expand=True, padx=15, pady=10)
+        main_container.grid_columnconfigure((0, 1), weight=1)
 
-        main_container.grid_columnconfigure(0, weight=1)
-        main_container.grid_columnconfigure(1, weight=1)
-
-        # === КОЛОНКА 1: AUTOCLICKER ===
+        # === AUTOCLICKER ===
         ac_frame = ctk.CTkFrame(main_container, corner_radius=12)
         ac_frame.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
         ac_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(ac_frame, text="⚡ AUTOCLICKER", font=("Arial", 16, "bold"), text_color="#3B82F6").grid(row=0, column=0, pady=(15, 10))
-
         ctk.CTkLabel(ac_frame, text="Click Target:", font=("Arial", 12, "bold")).grid(row=1, column=0, pady=(5, 2), sticky="w", padx=20)
+
         self.ac_target_btn = ctk.CTkButton(
             ac_frame, text=f"[{self.ac_target['display']}]  (Click to Set)",
-            fg_color="#2563EB", hover_color="#1D4ED8",
+            width=280, fg_color="#2563EB", hover_color="#1D4ED8",
             command=lambda: self._start_binding('ac_target')
         )
-        self.ac_target_btn.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
+        self.ac_target_btn.grid(row=2, column=0, padx=20, pady=5)
 
         ctk.CTkLabel(ac_frame, text="Click Interval (ms):", font=("Arial", 11)).grid(row=3, column=0, pady=(8, 0), sticky="w", padx=20)
-        self.ac_interval = ctk.CTkEntry(ac_frame, placeholder_text="100")
+        self.ac_interval = ctk.CTkEntry(ac_frame, placeholder_text="100", width=280)
         self.ac_interval.insert(0, "100")
-        self.ac_interval.grid(row=4, column=0, padx=20, pady=2, sticky="ew")
+        self.ac_interval.grid(row=4, column=0, padx=20, pady=2)
 
         ctk.CTkLabel(ac_frame, text="Random Offset (± ms):", font=("Arial", 11)).grid(row=5, column=0, pady=(8, 0), sticky="w", padx=20)
-        self.ac_offset = ctk.CTkEntry(ac_frame, placeholder_text="20")
+        self.ac_offset = ctk.CTkEntry(ac_frame, placeholder_text="20", width=280)
         self.ac_offset.insert(0, "20")
-        self.ac_offset.grid(row=6, column=0, padx=20, pady=2, sticky="ew")
+        self.ac_offset.grid(row=6, column=0, padx=20, pady=2)
 
         ctk.CTkLabel(ac_frame, text="Global Start/Stop Hotkey:", font=("Arial", 12, "bold")).grid(row=7, column=0, pady=(12, 2), sticky="w", padx=20)
         self.ac_hotkey_btn = ctk.CTkButton(
             ac_frame, text=f"[{self.ac_hotkey['display']}]  (Click to Set)",
-            fg_color="#475569", hover_color="#64748B",
+            width=280, fg_color="#475569", hover_color="#64748B",
             command=lambda: self._start_binding('ac_hotkey')
         )
-        self.ac_hotkey_btn.grid(row=8, column=0, padx=20, pady=5, sticky="ew")
+        self.ac_hotkey_btn.grid(row=8, column=0, padx=20, pady=5)
 
         self.ac_status_lbl = ctk.CTkLabel(ac_frame, text="Status: STOPPED", text_color="#EF4444", font=("Arial", 13, "bold"))
         self.ac_status_lbl.grid(row=9, column=0, pady=15)
 
-        # === КОЛОНКА 2: HOLD MODE ===
+        # === HOLD MODE ===
         hold_frame = ctk.CTkFrame(main_container, corner_radius=12)
         hold_frame.grid(row=0, column=1, padx=10, pady=5, sticky="nsew")
         hold_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(hold_frame, text="✊ HOLD MODE", font=("Arial", 16, "bold"), text_color="#10B981").grid(row=0, column=0, pady=(15, 10))
-
         ctk.CTkLabel(hold_frame, text="Hold Target:", font=("Arial", 12, "bold")).grid(row=1, column=0, pady=(5, 2), sticky="w", padx=20)
+
         self.hold_target_btn = ctk.CTkButton(
             hold_frame, text=f"[{self.hold_target['display']}]  (Click to Set)",
-            fg_color="#059669", hover_color="#047857",
+            width=280, fg_color="#059669", hover_color="#047857",
             command=lambda: self._start_binding('hold_target')
         )
-        self.hold_target_btn.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
+        self.hold_target_btn.grid(row=2, column=0, padx=20, pady=5)
 
         ctk.CTkLabel(hold_frame, text="Hold Type:", font=("Arial", 11)).grid(row=3, column=0, pady=(6, 0), sticky="w", padx=20)
         self.hold_mode = ctk.CTkOptionMenu(
             hold_frame, values=["Continuous Hold", "Interval Hold"],
-            fg_color="#065F46", button_color="#047857", command=self._on_hold_mode_change
+            width=280, fg_color="#065F46", button_color="#047857", command=self._on_hold_mode_change
         )
         self.hold_mode.set("Continuous Hold")
-        self.hold_mode.grid(row=4, column=0, padx=20, pady=2, sticky="ew")
+        self.hold_mode.grid(row=4, column=0, padx=20, pady=2)
 
-        fields_frame = ctk.CTkFrame(hold_frame, fg_color="transparent")
-        fields_frame.grid(row=5, column=0, padx=20, pady=2, sticky="ew")
-        fields_frame.grid_columnconfigure(0, weight=1)
-        fields_frame.grid_columnconfigure(1, weight=1)
+        fields_frame = ctk.CTkFrame(hold_frame, fg_color="transparent", width=280)
+        fields_frame.grid(row=5, column=0, padx=20, pady=2)
+        fields_frame.grid_columnconfigure((0, 1), weight=1)
 
         self.lbl_hold_time = ctk.CTkLabel(fields_frame, text="Hold Duration (sec):", font=("Arial", 10))
         self.lbl_hold_time.grid(row=0, column=0, sticky="w")
-        self.hold_time_entry = ctk.CTkEntry(fields_frame, placeholder_text="2.0")
+        self.hold_time_entry = ctk.CTkEntry(fields_frame, placeholder_text="2.0", width=135)
         self.hold_time_entry.insert(0, "2.0")
         self.hold_time_entry.grid(row=1, column=0, padx=(0, 5), sticky="ew")
 
         self.lbl_pause_time = ctk.CTkLabel(fields_frame, text="Pause Interval (sec):", font=("Arial", 10))
         self.lbl_pause_time.grid(row=0, column=1, sticky="w")
-        self.hold_pause_entry = ctk.CTkEntry(fields_frame, placeholder_text="1.0")
+        self.hold_pause_entry = ctk.CTkEntry(fields_frame, placeholder_text="1.0", width=135)
         self.hold_pause_entry.insert(0, "1.0")
         self.hold_pause_entry.grid(row=1, column=1, padx=(5, 0), sticky="ew")
 
@@ -333,10 +334,10 @@ class EasyClicker(ctk.CTk):
         ctk.CTkLabel(hold_frame, text="Global Start/Stop Hotkey:", font=("Arial", 12, "bold")).grid(row=7, column=0, pady=(10, 2), sticky="w", padx=20)
         self.hold_hotkey_btn = ctk.CTkButton(
             hold_frame, text=f"[{self.hold_hotkey['display']}]  (Click to Set)",
-            fg_color="#475569", hover_color="#64748B",
+            width=280, fg_color="#475569", hover_color="#64748B",
             command=lambda: self._start_binding('hold_hotkey')
         )
-        self.hold_hotkey_btn.grid(row=8, column=0, padx=20, pady=5, sticky="ew")
+        self.hold_hotkey_btn.grid(row=8, column=0, padx=20, pady=5)
 
         self.hold_status_lbl = ctk.CTkLabel(hold_frame, text="Status: STOPPED", text_color="#EF4444", font=("Arial", 13, "bold"))
         self.hold_status_lbl.grid(row=9, column=0, pady=15)
@@ -348,32 +349,19 @@ class EasyClicker(ctk.CTk):
             self.settings_window.focus()
 
     def _on_hold_mode_change(self, choice):
-        if choice == "Continuous Hold":
-            self._update_hold_fields_visual(enabled=False)
-        else:
-            self._update_hold_fields_visual(enabled=True)
+        self._update_hold_fields_visual(enabled=(choice != "Continuous Hold"))
 
     def _update_hold_fields_visual(self, enabled: bool):
-        if enabled:
-            self.hold_time_entry.configure(
-                state="normal", fg_color="#0F172A", text_color="#F8FAFC", border_color="#475569"
-            )
-            self.hold_pause_entry.configure(
-                state="normal", fg_color="#0F172A", text_color="#F8FAFC", border_color="#475569"
-            )
-            self.lbl_hold_time.configure(text_color="#F8FAFC")
-            self.lbl_pause_time.configure(text_color="#F8FAFC")
-        else:
-            self.hold_time_entry.configure(
-                state="disabled", fg_color="#1E293B", text_color="#64748B", border_color="#334155"
-            )
-            self.hold_pause_entry.configure(
-                state="disabled", fg_color="#1E293B", text_color="#64748B", border_color="#334155"
-            )
-            self.lbl_hold_time.configure(text_color="#64748B")
-            self.lbl_pause_time.configure(text_color="#64748B")
+        st = "normal" if enabled else "disabled"
+        bg = "#0F172A" if enabled else "#1E293B"
+        txt = "#F8FAFC" if enabled else "#64748B"
+        border = "#475569" if enabled else "#334155"
 
-    # --- СИСТЕМА СОХРАНЕНИЯ / ЗАГРУЗКИ (JSON) ---
+        self.hold_time_entry.configure(state=st, fg_color=bg, text_color=txt, border_color=border)
+        self.hold_pause_entry.configure(state=st, fg_color=bg, text_color=txt, border_color=border)
+        self.lbl_hold_time.configure(text_color=txt)
+        self.lbl_pause_time.configure(text_color=txt)
+
     def _save_config(self):
         config = {
             'ac_interval': self.ac_interval.get(),
@@ -404,57 +392,34 @@ class EasyClicker(ctk.CTk):
             if 'ac_interval' in cfg:
                 self.ac_interval.delete(0, 'end')
                 self.ac_interval.insert(0, str(cfg['ac_interval']))
-
             if 'ac_offset' in cfg:
                 self.ac_offset.delete(0, 'end')
                 self.ac_offset.insert(0, str(cfg['ac_offset']))
-
             if 'hold_time' in cfg:
                 self.hold_time_entry.delete(0, 'end')
                 self.hold_time_entry.insert(0, str(cfg['hold_time']))
-
             if 'hold_pause' in cfg:
                 self.hold_pause_entry.delete(0, 'end')
                 self.hold_pause_entry.insert(0, str(cfg['hold_pause']))
-
             if 'hold_mode' in cfg:
-                mode_val = cfg['hold_mode']
-                if "Interval" in mode_val:
-                    mode_val = "Interval Hold"
+                mode_val = "Interval Hold" if "Interval" in cfg['hold_mode'] else "Continuous Hold"
                 self.hold_mode.set(mode_val)
                 self._on_hold_mode_change(mode_val)
-
             if 'is_topmost' in cfg:
                 self.is_topmost = cfg['is_topmost']
                 self.attributes("-topmost", self.is_topmost)
-
             if 'selected_preset' in cfg:
                 self.selected_preset = cfg['selected_preset']
 
-            if cfg.get('ac_target'):
-                des = deserialize_input(cfg['ac_target'])
-                if des:
-                    self.ac_target = des
-                    self.ac_target_btn.configure(text=f"[{des['display']}]  (Click to Set)")
+            targets = [('ac_target', self.ac_target_btn), ('hold_target', self.hold_target_btn),
+                       ('ac_hotkey', self.ac_hotkey_btn), ('hold_hotkey', self.hold_hotkey_btn)]
 
-            if cfg.get('hold_target'):
-                des = deserialize_input(cfg['hold_target'])
-                if des:
-                    self.hold_target = des
-                    self.hold_target_btn.configure(text=f"[{des['display']}]  (Click to Set)")
-
-            if cfg.get('ac_hotkey'):
-                des = deserialize_input(cfg['ac_hotkey'])
-                if des:
-                    self.ac_hotkey = des
-                    self.ac_hotkey_btn.configure(text=f"[{des['display']}]  (Click to Set)")
-
-            if cfg.get('hold_hotkey'):
-                des = deserialize_input(cfg['hold_hotkey'])
-                if des:
-                    self.hold_hotkey = des
-                    self.hold_hotkey_btn.configure(text=f"[{des['display']}]  (Click to Set)")
-
+            for key_name, btn in targets:
+                if cfg.get(key_name):
+                    des = deserialize_input(cfg[key_name])
+                    if des:
+                        setattr(self, key_name, des)
+                        btn.configure(text=f"[{des['display']}]  (Click to Set)")
         except Exception:
             pass
 
@@ -462,76 +427,52 @@ class EasyClicker(ctk.CTk):
         self._save_config()
         self.destroy()
 
-    # --- ЗАПИСЬ НАЖАТИЙ КЛАВИШ ---
     def _start_binding(self, mode):
-        if self.binding_mode is not None:
+        if self.binding_mode is not None or time.time() < self.bind_cooldown:
             return
 
         self.binding_mode = mode
-        self.bind_start_time = time.time() + 0.35
+        self.bind_start_time = time.time() + 0.08
         self._set_binding_buttons_state("disabled")
 
-        btn_text = ">> PRESS ANY KEY / MOUSE <<"
-        if mode == 'ac_target':
-            self.ac_target_btn.configure(text=btn_text, fg_color="#F59E0B")
-        elif mode == 'hold_target':
-            self.hold_target_btn.configure(text=btn_text, fg_color="#F59E0B")
-        elif mode == 'ac_hotkey':
-            self.ac_hotkey_btn.configure(text=">> PRESS HOTKEY <<", fg_color="#F59E0B")
-        elif mode == 'hold_hotkey':
-            self.hold_hotkey_btn.configure(text=">> PRESS HOTKEY <<", fg_color="#F59E0B")
+        btn_map = {
+            'ac_target': (self.ac_target_btn, ">> PRESS ANY KEY / MOUSE <<"),
+            'hold_target': (self.hold_target_btn, ">> PRESS ANY KEY / MOUSE <<"),
+            'ac_hotkey': (self.ac_hotkey_btn, ">> PRESS HOTKEY <<"),
+            'hold_hotkey': (self.hold_hotkey_btn, ">> PRESS HOTKEY <<")
+        }
+
+        btn, txt = btn_map[mode]
+        btn.configure(text=txt, fg_color="#F59E0B")
 
     def _set_binding_buttons_state(self, state):
-        self.ac_target_btn.configure(state=state)
-        self.hold_target_btn.configure(state=state)
-        self.ac_hotkey_btn.configure(state=state)
-        self.hold_hotkey_btn.configure(state=state)
+        for btn in (self.ac_target_btn, self.hold_target_btn, self.ac_hotkey_btn, self.hold_hotkey_btn):
+            btn.configure(state=state)
 
     def _on_mouse_click(self, x, y, button, pressed):
-        if not pressed or not self.binding_mode:
+        if not pressed or not self.binding_mode or time.time() < self.bind_start_time:
             return
 
-        if time.time() < self.bind_start_time:
-            return
-
-        if self.binding_mode in ['ac_target', 'hold_target']:
+        if self.binding_mode in ('ac_target', 'hold_target'):
             btn_str = str(button).split('.')[-1].upper()
+            display_map = {"LEFT": "LMB", "RIGHT": "RMB", "MIDDLE": "MMB", "X1": "Mouse 4 (Back)", "X2": "Mouse 5 (Forward)"}
+            display = display_map.get(btn_str, f"Mouse ({btn_str})")
 
-            if btn_str == "LEFT":
-                display = "LMB"
-            elif btn_str == "RIGHT":
-                display = "RMB"
-            elif btn_str == "MIDDLE":
-                display = "MMB"
-            elif btn_str == "X1":
-                display = "Mouse 4 (Back)"
-            elif btn_str == "X2":
-                display = "Mouse 5 (Forward)"
-            else:
-                display = f"Mouse ({btn_str})"
-
-            data = {'type': 'mouse', 'button': button, 'display': display}
-            self._finalize_binding(data)
+            self._finalize_binding({'type': 'mouse', 'button': button, 'display': display})
 
     def _on_key_press(self, key):
         if self.binding_mode:
-            display_str = ""
-            char_key = None
-
             if hasattr(key, 'vk') and key.vk in NUMPAD_VK_MAP:
-                display_str = NUMPAD_VK_MAP[key.vk]
-                char_key = key
+                display_str, char_key = NUMPAD_VK_MAP[key.vk], key
             elif hasattr(key, 'char') and key.char:
                 raw_char = key.char
                 eng_char = RU_TO_EN.get(raw_char, raw_char).upper()
-                display_str = eng_char
-                char_key = eng_char.lower()
+                display_str, char_key = eng_char, eng_char.lower()
             else:
                 display_str = str(key).replace("Key.", "").upper()
                 char_key = key
 
-            data = {'type': 'keyboard', 'key': char_key, 'display': display_str}
-            self._finalize_binding(data)
+            self._finalize_binding({'type': 'keyboard', 'key': char_key, 'display': display_str})
             return
 
         if self._matches_hotkey(key, self.ac_hotkey):
@@ -546,7 +487,6 @@ class EasyClicker(ctk.CTk):
 
         if hasattr(pressed_key, 'vk') and hasattr(hk, 'vk'):
             return pressed_key.vk == hk.vk
-
         if hasattr(pressed_key, 'char') and pressed_key.char:
             char = RU_TO_EN.get(pressed_key.char, pressed_key.char).lower()
             return char == str(hk).lower()
@@ -554,51 +494,43 @@ class EasyClicker(ctk.CTk):
         return pressed_key == hk
 
     def _finalize_binding(self, data):
-        if self.binding_mode == 'ac_target':
-            self.ac_target = data
-            self.ac_target_btn.configure(text=f"[{data['display']}]  (Click to Set)", fg_color="#2563EB")
-        elif self.binding_mode == 'hold_target':
-            self.hold_target = data
-            self.hold_target_btn.configure(text=f"[{data['display']}]  (Click to Set)", fg_color="#059669")
-        elif self.binding_mode == 'ac_hotkey':
-            if data['type'] == 'mouse':
-                self._set_binding_buttons_state("normal")
-                self.binding_mode = None
-                return
-            self.ac_hotkey = data
-            self.ac_hotkey_btn.configure(text=f"[{data['display']}]  (Click to Set)", fg_color="#475569")
-        elif self.binding_mode == 'hold_hotkey':
-            if data['type'] == 'mouse':
-                self._set_binding_buttons_state("normal")
-                self.binding_mode = None
-                return
-            self.hold_hotkey = data
-            self.hold_hotkey_btn.configure(text=f"[{data['display']}]  (Click to Set)", fg_color="#475569")
+        color_map = {'ac_target': "#2563EB", 'hold_target': "#059669", 'ac_hotkey': "#475569", 'hold_hotkey': "#475569"}
+        btn_map = {'ac_target': self.ac_target_btn, 'hold_target': self.hold_target_btn,
+                   'ac_hotkey': self.ac_hotkey_btn, 'hold_hotkey': self.hold_hotkey_btn}
+
+        mode = self.binding_mode
+        if mode in ('ac_hotkey', 'hold_hotkey') and data['type'] == 'mouse':
+            self.binding_mode = None
+            self.bind_cooldown = time.time() + 0.1
+            self._set_binding_buttons_state("normal")
+            return
+
+        setattr(self, mode, data)
+        btn_map[mode].configure(text=f"[{data['display']}]  (Click to Set)", fg_color=color_map[mode])
 
         self.binding_mode = None
+        self.bind_cooldown = time.time() + 0.1
         self._set_binding_buttons_state("normal")
         self._save_config()
 
-    # --- ТРИГГЕРЫ СТАРТА / СТОПА ---
     def toggle_autoclicker(self):
         if self.hold_active: return
         self.clicker_active = not self.clicker_active
+        txt, color = ("Status: ACTIVE", "#10B981") if self.clicker_active else ("Status: STOPPED", "#EF4444")
+        self.ac_status_lbl.configure(text=txt, text_color=color)
+
         if self.clicker_active:
-            self.ac_status_lbl.configure(text="Status: ACTIVE", text_color="#10B981")
             threading.Thread(target=self._autoclick_loop, daemon=True).start()
-        else:
-            self.ac_status_lbl.configure(text="Status: STOPPED", text_color="#EF4444")
 
     def toggle_hold(self):
         if self.clicker_active: return
         self.hold_active = not self.hold_active
-        if self.hold_active:
-            self.hold_status_lbl.configure(text="Status: ACTIVE", text_color="#10B981")
-            threading.Thread(target=self._hold_loop, daemon=True).start()
-        else:
-            self.hold_status_lbl.configure(text="Status: STOPPED", text_color="#EF4444")
+        txt, color = ("Status: ACTIVE", "#10B981") if self.hold_active else ("Status: STOPPED", "#EF4444")
+        self.hold_status_lbl.configure(text=txt, text_color=color)
 
-    # --- РАБОЧИЕ ЦИКЛЫ ---
+        if self.hold_active:
+            threading.Thread(target=self._hold_loop, daemon=True).start()
+
     def _autoclick_loop(self):
         while self.clicker_active:
             try:
@@ -634,7 +566,6 @@ class EasyClicker(ctk.CTk):
                 self.mouse_ctrl.release(target['button'])
             else:
                 self.kb_ctrl.release(target['key'])
-
         else:
             try:
                 hold_duration = float(self.hold_time_entry.get())
