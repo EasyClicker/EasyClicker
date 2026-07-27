@@ -11,7 +11,7 @@ from pynput import mouse, keyboard
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, KeyCode, Controller as KeyboardController
 
-# === ПРОВЕРКА НА ЕДИНСТВЕННЫЙ ЭКЗЕМПЛЯР (SINGLE INSTANCE) ===
+# === SINGLE INSTANCE CHECK ===
 ERROR_ALREADY_EXISTS = 183
 mutex_name = "EasyClicker_Unique_App_Mutex_2026"
 kernel32 = ctypes.windll.kernel32
@@ -20,28 +20,29 @@ mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
 if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
     sys.exit(0)
 
-# Уникальный ID процесса для привязки иконки к панели задач Windows
+# Set explicit AppUserModelID for Windows taskbar icon binding
 try:
     myappid = 'EasyClicker.AutoClicker.App.1'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 except Exception:
     pass
 
-# Настройки темы
+# Default theme configuration
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
-# --- ПУТЬ К ФАЙЛУ КОНФИГУРАЦИИ В APPDATA (Разрешает проблему с правами в Program Files) ---
-def get_config_path():
+# --- CONFIG & CACHE DIRECTORY IN APPDATA ---
+def get_app_dir():
     appdata_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'EasyClicker')
     os.makedirs(appdata_dir, exist_ok=True)
-    return os.path.join(appdata_dir, 'easyclicker_config.json')
+    return appdata_dir
 
 
-CONFIG_FILE = get_config_path()
+APP_DIR = get_app_dir()
+CONFIG_FILE = os.path.join(APP_DIR, 'easyclicker_config.json')
 
-# --- ГЛОБАЛЬНЫЙ КЭШ РЕСУРСОВ ---
+# --- GLOBAL RESOURCE CACHE IN MEMORY ---
 _RESOURCE_PATH_CACHE = {}
 _GEAR_ICON_CACHE = None
 
@@ -70,38 +71,62 @@ def set_window_icon(window):
             pass
 
 
-def create_gear_icon(size=(16, 16), color="#E2E8F0"):
+# Adaptive gear icon generation with two-tier cache
+def create_gear_icon(size=(16, 16)):
     global _GEAR_ICON_CACHE
     if _GEAR_ICON_CACHE is not None:
         return _GEAR_ICON_CACHE
 
-    img_size = 128
-    img = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
-    center = img_size / 2
+    cache_light_file = os.path.join(APP_DIR, "gear_light_cache.png")
+    cache_dark_file = os.path.join(APP_DIR, "gear_dark_cache.png")
 
-    tooth_len, tooth_w = 56, 18
-    for angle in (0, 45, 90, 135):
-        rect = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(rect)
-        draw.rounded_rectangle(
-            [center - tooth_w / 2, center - tooth_len, center + tooth_w / 2, center + tooth_len],
-            radius=5, fill=color
-        )
-        rotated = rect.rotate(angle, resample=Image.BICUBIC, center=(center, center))
-        img = Image.alpha_composite(img, rotated)
+    if os.path.exists(cache_light_file) and os.path.exists(cache_dark_file):
+        try:
+            img_light = Image.open(cache_light_file)
+            img_dark = Image.open(cache_dark_file)
+            _GEAR_ICON_CACHE = ctk.CTkImage(light_image=img_light, dark_image=img_dark, size=size)
+            return _GEAR_ICON_CACHE
+        except Exception:
+            pass
 
-    draw = ImageDraw.Draw(img)
-    body_r = 42
-    draw.ellipse([center - body_r, center - body_r, center + body_r, center + body_r], fill=color)
+    def draw_gear(color):
+        img_size = 128
+        img = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+        center = img_size / 2
 
-    hole_r = 18
-    draw.ellipse([center - hole_r, center - hole_r, center + hole_r, center + hole_r], fill=(0, 0, 0, 0))
+        tooth_len, tooth_w = 56, 18
+        for angle in (0, 45, 90, 135):
+            rect = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(rect)
+            draw.rounded_rectangle(
+                [center - tooth_w / 2, center - tooth_len, center + tooth_w / 2, center + tooth_len],
+                radius=5, fill=color
+            )
+            rotated = rect.rotate(angle, resample=Image.BICUBIC, center=(center, center))
+            img = Image.alpha_composite(img, rotated)
 
-    _GEAR_ICON_CACHE = ctk.CTkImage(light_image=img, dark_image=img, size=size)
+        draw = ImageDraw.Draw(img)
+        body_r = 42
+        draw.ellipse([center - body_r, center - body_r, center + body_r, center + body_r], fill=color)
+
+        hole_r = 18
+        draw.ellipse([center - hole_r, center - hole_r, center + hole_r, center + hole_r], fill=(0, 0, 0, 0))
+        return img
+
+    img_light_mode = draw_gear("#1F2937")
+    img_dark_mode = draw_gear("#F3F4F6")
+
+    try:
+        img_light_mode.save(cache_light_file, "PNG")
+        img_dark_mode.save(cache_dark_file, "PNG")
+    except Exception:
+        pass
+
+    _GEAR_ICON_CACHE = ctk.CTkImage(light_image=img_light_mode, dark_image=img_dark_mode, size=size)
     return _GEAR_ICON_CACHE
 
 
-# Карта раскладки RU -> EN
+# RU to EN keyboard mapping
 RU_TO_EN = {
     'й': 'Q', 'ц': 'W', 'у': 'E', 'к': 'R', 'е': 'T', 'н': 'Y', 'г': 'U', 'ш': 'I', 'щ': 'O', 'з': 'P', 'х': '[', 'ъ': ']',
     'ф': 'A', 'ы': 'S', 'в': 'D', 'а': 'F', 'п': 'G', 'р': 'H', 'о': 'J', 'л': 'K', 'д': 'L', 'ж': ';', 'э': "'",
@@ -175,12 +200,19 @@ class SettingsWindow(ctk.CTkToplevel):
         self.topmost_cb = ctk.CTkCheckBox(self, text="Always on Top", variable=self.topmost_var, command=self._toggle_topmost)
         self.topmost_cb.pack(pady=10, anchor="w", padx=30)
 
-        ctk.CTkLabel(self, text="Default Click Speed Preset:", font=("Arial", 12)).pack(pady=(10, 2), anchor="w", padx=30)
-        self.preset_opt = ctk.CTkOptionMenu(self, values=["Fast (50ms)", "Normal (100ms)", "Slow (250ms)"], command=self._apply_preset)
-        self.preset_opt.set(parent.selected_preset)
-        self.preset_opt.pack(pady=5, fill="x", padx=30)
+        ctk.CTkLabel(self, text="App Theme:", font=("Arial", 12)).pack(pady=(10, 2), anchor="w", padx=30)
+        self.theme_opt = ctk.CTkOptionMenu(
+            self, values=["Dark", "Light", "System"], command=self._apply_theme,
+            fg_color=("#E2E8F0", "#2B2D31"), button_color=("#CBD5E1", "#3F4147"),
+            button_hover_color=("#94A3B8", "#4E5058"), text_color=("#1F2937", "#F3F4F6")
+        )
+        self.theme_opt.set(parent.appearance_mode)
+        self.theme_opt.pack(pady=5, fill="x", padx=30)
 
-        ctk.CTkButton(self, text="Close", command=self.destroy, fg_color="#3B82F6").pack(pady=15)
+        ctk.CTkButton(
+            self, text="Close", command=self.destroy,
+            fg_color=("#2563EB", "#3B82F6"), hover_color=("#1D4ED8", "#2563EB"), text_color="#FFFFFF"
+        ).pack(pady=15)
 
     def _toggle_topmost(self):
         val = self.topmost_var.get()
@@ -188,14 +220,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent.attributes("-topmost", val)
         self.parent._save_config()
 
-    def _apply_preset(self, choice):
-        self.parent.selected_preset = choice
-        preset_map = {"Fast": "50", "Normal": "100", "Slow": "250"}
-        for key, val in preset_map.items():
-            if key in choice:
-                self.parent.ac_interval.delete(0, 'end')
-                self.parent.ac_interval.insert(0, val)
-                break
+    def _apply_theme(self, choice):
+        self.parent.appearance_mode = choice
+        ctk.set_appearance_mode(choice)
         self.parent._save_config()
 
 
@@ -207,7 +234,7 @@ class EasyClicker(ctk.CTk):
         self.geometry("820x490")
         self.resizable(False, False)
         self.is_topmost = False
-        self.selected_preset = "Normal (100ms)"
+        self.appearance_mode = "Dark"
         self.settings_window = None
 
         self.mouse_ctrl = MouseController()
@@ -245,11 +272,12 @@ class EasyClicker(ctk.CTk):
         header = ctk.CTkFrame(self, height=45, corner_radius=0, fg_color="transparent")
         header.pack(fill="x", padx=15, pady=(10, 0))
 
-        gear_img = create_gear_icon(size=(16, 16), color="#FFFFFF")
+        gear_img = create_gear_icon(size=(16, 16))
 
         self.settings_btn = ctk.CTkButton(
             header, text=" Settings", image=gear_img, compound="left",
-            width=110, fg_color="#334155", hover_color="#475569", command=self._open_settings
+            width=110, fg_color=("#E2E8F0", "#2B2D31"), hover_color=("#CBD5E1", "#3F4147"),
+            text_color=("#1F2937", "#F3F4F6"), command=self._open_settings
         )
         self.settings_btn.pack(side="left")
 
@@ -259,53 +287,60 @@ class EasyClicker(ctk.CTk):
         main_container.pack(fill="both", expand=True, padx=15, pady=10)
         main_container.grid_columnconfigure((0, 1), weight=1)
 
+        # Neutral clean Entry styling
+        entry_kwargs = {
+            "fg_color": ("#FFFFFF", "#1E1F22"),
+            "border_color": ("#CBD5E1", "#3F4147"),
+            "text_color": ("#1F2937", "#F3F4F6")
+        }
+
         # === AUTOCLICKER ===
-        ac_frame = ctk.CTkFrame(main_container, corner_radius=12)
+        ac_frame = ctk.CTkFrame(main_container, corner_radius=12, fg_color=("#F1F5F9", "#2B2D31"))
         ac_frame.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
         ac_frame.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(ac_frame, text="⚡ AUTOCLICKER", font=("Arial", 16, "bold"), text_color="#3B82F6").grid(row=0, column=0, pady=(15, 10))
+        ctk.CTkLabel(ac_frame, text="⚡ AUTOCLICKER", font=("Arial", 16, "bold"), text_color=("#2563EB", "#60A5FA")).grid(row=0, column=0, pady=(15, 10))
         ctk.CTkLabel(ac_frame, text="Click Target:", font=("Arial", 12, "bold")).grid(row=1, column=0, pady=(5, 2), sticky="w", padx=20)
 
         self.ac_target_btn = ctk.CTkButton(
             ac_frame, text=f"[{self.ac_target['display']}]  (Click to Set)",
-            width=280, fg_color="#2563EB", hover_color="#1D4ED8",
+            width=280, fg_color="#2563EB", hover_color="#1D4ED8", text_color="#FFFFFF",
             command=lambda: self._start_binding('ac_target')
         )
         self.ac_target_btn.grid(row=2, column=0, padx=20, pady=5)
 
         ctk.CTkLabel(ac_frame, text="Click Interval (ms):", font=("Arial", 11)).grid(row=3, column=0, pady=(8, 0), sticky="w", padx=20)
-        self.ac_interval = ctk.CTkEntry(ac_frame, placeholder_text="100", width=280)
+        self.ac_interval = ctk.CTkEntry(ac_frame, placeholder_text="100", width=280, **entry_kwargs)
         self.ac_interval.insert(0, "100")
         self.ac_interval.grid(row=4, column=0, padx=20, pady=2)
 
         ctk.CTkLabel(ac_frame, text="Random Offset (± ms):", font=("Arial", 11)).grid(row=5, column=0, pady=(8, 0), sticky="w", padx=20)
-        self.ac_offset = ctk.CTkEntry(ac_frame, placeholder_text="20", width=280)
+        self.ac_offset = ctk.CTkEntry(ac_frame, placeholder_text="20", width=280, **entry_kwargs)
         self.ac_offset.insert(0, "20")
         self.ac_offset.grid(row=6, column=0, padx=20, pady=2)
 
         ctk.CTkLabel(ac_frame, text="Global Start/Stop Hotkey:", font=("Arial", 12, "bold")).grid(row=7, column=0, pady=(12, 2), sticky="w", padx=20)
         self.ac_hotkey_btn = ctk.CTkButton(
             ac_frame, text=f"[{self.ac_hotkey['display']}]  (Click to Set)",
-            width=280, fg_color="#475569", hover_color="#64748B",
-            command=lambda: self._start_binding('ac_hotkey')
+            width=280, fg_color=("#E2E8F0", "#3F4147"), hover_color=("#CBD5E1", "#4E5058"),
+            text_color=("#1F2937", "#F3F4F6"), command=lambda: self._start_binding('ac_hotkey')
         )
         self.ac_hotkey_btn.grid(row=8, column=0, padx=20, pady=5)
 
-        self.ac_status_lbl = ctk.CTkLabel(ac_frame, text="Status: STOPPED", text_color="#EF4444", font=("Arial", 13, "bold"))
+        self.ac_status_lbl = ctk.CTkLabel(ac_frame, text="Status: STOPPED", text_color=("#DC2626", "#EF4444"), font=("Arial", 13, "bold"))
         self.ac_status_lbl.grid(row=9, column=0, pady=15)
 
         # === HOLD MODE ===
-        hold_frame = ctk.CTkFrame(main_container, corner_radius=12)
+        hold_frame = ctk.CTkFrame(main_container, corner_radius=12, fg_color=("#F1F5F9", "#2B2D31"))
         hold_frame.grid(row=0, column=1, padx=10, pady=5, sticky="nsew")
         hold_frame.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(hold_frame, text="✊ HOLD MODE", font=("Arial", 16, "bold"), text_color="#10B981").grid(row=0, column=0, pady=(15, 10))
+        ctk.CTkLabel(hold_frame, text="✊ HOLD MODE", font=("Arial", 16, "bold"), text_color=("#059669", "#34D399")).grid(row=0, column=0, pady=(15, 10))
         ctk.CTkLabel(hold_frame, text="Hold Target:", font=("Arial", 12, "bold")).grid(row=1, column=0, pady=(5, 2), sticky="w", padx=20)
 
         self.hold_target_btn = ctk.CTkButton(
             hold_frame, text=f"[{self.hold_target['display']}]  (Click to Set)",
-            width=280, fg_color="#059669", hover_color="#047857",
+            width=280, fg_color="#059669", hover_color="#047857", text_color="#FFFFFF",
             command=lambda: self._start_binding('hold_target')
         )
         self.hold_target_btn.grid(row=2, column=0, padx=20, pady=5)
@@ -313,7 +348,9 @@ class EasyClicker(ctk.CTk):
         ctk.CTkLabel(hold_frame, text="Hold Type:", font=("Arial", 11)).grid(row=3, column=0, pady=(6, 0), sticky="w", padx=20)
         self.hold_mode = ctk.CTkOptionMenu(
             hold_frame, values=["Continuous Hold", "Interval Hold"],
-            width=280, fg_color="#065F46", button_color="#047857", command=self._on_hold_mode_change
+            width=280, fg_color=("#E2E8F0", "#059669"), button_color=("#CBD5E1", "#047857"),
+            button_hover_color=("#94A3B8", "#065F46"), text_color=("#1F2937", "#FFFFFF"),
+            command=self._on_hold_mode_change
         )
         self.hold_mode.set("Continuous Hold")
         self.hold_mode.grid(row=4, column=0, padx=20, pady=2)
@@ -324,13 +361,13 @@ class EasyClicker(ctk.CTk):
 
         self.lbl_hold_time = ctk.CTkLabel(fields_frame, text="Hold Duration (sec):", font=("Arial", 10))
         self.lbl_hold_time.grid(row=0, column=0, sticky="w")
-        self.hold_time_entry = ctk.CTkEntry(fields_frame, placeholder_text="2.0", width=135)
+        self.hold_time_entry = ctk.CTkEntry(fields_frame, placeholder_text="2.0", width=135, **entry_kwargs)
         self.hold_time_entry.insert(0, "2.0")
         self.hold_time_entry.grid(row=1, column=0, padx=(0, 5), sticky="ew")
 
         self.lbl_pause_time = ctk.CTkLabel(fields_frame, text="Pause Interval (sec):", font=("Arial", 10))
         self.lbl_pause_time.grid(row=0, column=1, sticky="w")
-        self.hold_pause_entry = ctk.CTkEntry(fields_frame, placeholder_text="1.0", width=135)
+        self.hold_pause_entry = ctk.CTkEntry(fields_frame, placeholder_text="1.0", width=135, **entry_kwargs)
         self.hold_pause_entry.insert(0, "1.0")
         self.hold_pause_entry.grid(row=1, column=1, padx=(5, 0), sticky="ew")
 
@@ -339,12 +376,12 @@ class EasyClicker(ctk.CTk):
         ctk.CTkLabel(hold_frame, text="Global Start/Stop Hotkey:", font=("Arial", 12, "bold")).grid(row=7, column=0, pady=(10, 2), sticky="w", padx=20)
         self.hold_hotkey_btn = ctk.CTkButton(
             hold_frame, text=f"[{self.hold_hotkey['display']}]  (Click to Set)",
-            width=280, fg_color="#475569", hover_color="#64748B",
-            command=lambda: self._start_binding('hold_hotkey')
+            width=280, fg_color=("#E2E8F0", "#3F4147"), hover_color=("#CBD5E1", "#4E5058"),
+            text_color=("#1F2937", "#F3F4F6"), command=lambda: self._start_binding('hold_hotkey')
         )
         self.hold_hotkey_btn.grid(row=8, column=0, padx=20, pady=5)
 
-        self.hold_status_lbl = ctk.CTkLabel(hold_frame, text="Status: STOPPED", text_color="#EF4444", font=("Arial", 13, "bold"))
+        self.hold_status_lbl = ctk.CTkLabel(hold_frame, text="Status: STOPPED", text_color=("#DC2626", "#EF4444"), font=("Arial", 13, "bold"))
         self.hold_status_lbl.grid(row=9, column=0, pady=15)
 
     def _open_settings(self):
@@ -358,9 +395,9 @@ class EasyClicker(ctk.CTk):
 
     def _update_hold_fields_visual(self, enabled: bool):
         st = "normal" if enabled else "disabled"
-        bg = "#0F172A" if enabled else "#1E293B"
-        txt = "#F8FAFC" if enabled else "#64748B"
-        border = "#475569" if enabled else "#334155"
+        bg = ("#FFFFFF", "#1E1F22") if enabled else ("#E2E8F0", "#232428")
+        txt = ("#1F2937", "#F3F4F6") if enabled else ("#64748B", "#94A3B8")
+        border = ("#CBD5E1", "#3F4147") if enabled else ("#CBD5E1", "#2B2D31")
 
         self.hold_time_entry.configure(state=st, fg_color=bg, text_color=txt, border_color=border)
         self.hold_pause_entry.configure(state=st, fg_color=bg, text_color=txt, border_color=border)
@@ -375,7 +412,7 @@ class EasyClicker(ctk.CTk):
             'hold_pause': self.hold_pause_entry.get(),
             'hold_mode': self.hold_mode.get(),
             'is_topmost': self.is_topmost,
-            'selected_preset': self.selected_preset,
+            'appearance_mode': self.appearance_mode,
             'ac_target': serialize_input(self.ac_target),
             'hold_target': serialize_input(self.hold_target),
             'ac_hotkey': serialize_input(self.ac_hotkey),
@@ -413,8 +450,9 @@ class EasyClicker(ctk.CTk):
             if 'is_topmost' in cfg:
                 self.is_topmost = cfg['is_topmost']
                 self.attributes("-topmost", self.is_topmost)
-            if 'selected_preset' in cfg:
-                self.selected_preset = cfg['selected_preset']
+            if 'appearance_mode' in cfg:
+                self.appearance_mode = cfg['appearance_mode']
+                ctk.set_appearance_mode(self.appearance_mode)
 
             targets = [('ac_target', self.ac_target_btn), ('hold_target', self.hold_target_btn),
                        ('ac_hotkey', self.ac_hotkey_btn), ('hold_hotkey', self.hold_hotkey_btn)]
@@ -448,7 +486,7 @@ class EasyClicker(ctk.CTk):
         }
 
         btn, txt = btn_map[mode]
-        btn.configure(text=txt, fg_color="#F59E0B")
+        btn.configure(text=txt, fg_color=("#D97706", "#F59E0B"), text_color="#FFFFFF")
 
     def _set_binding_buttons_state(self, state):
         for btn in (self.ac_target_btn, self.hold_target_btn, self.ac_hotkey_btn, self.hold_hotkey_btn):
@@ -499,9 +537,18 @@ class EasyClicker(ctk.CTk):
         return pressed_key == hk
 
     def _finalize_binding(self, data):
-        color_map = {'ac_target': "#2563EB", 'hold_target': "#059669", 'ac_hotkey': "#475569", 'hold_hotkey': "#475569"}
-        btn_map = {'ac_target': self.ac_target_btn, 'hold_target': self.hold_target_btn,
-                   'ac_hotkey': self.ac_hotkey_btn, 'hold_hotkey': self.hold_hotkey_btn}
+        color_map = {
+            'ac_target': "#2563EB",
+            'hold_target': "#059669",
+            'ac_hotkey': ("#E2E8F0", "#3F4147"),
+            'hold_hotkey': ("#E2E8F0", "#3F4147")
+        }
+        btn_map = {
+            'ac_target': self.ac_target_btn,
+            'hold_target': self.hold_target_btn,
+            'ac_hotkey': self.ac_hotkey_btn,
+            'hold_hotkey': self.hold_hotkey_btn
+        }
 
         mode = self.binding_mode
         if mode in ('ac_hotkey', 'hold_hotkey') and data['type'] == 'mouse':
@@ -511,7 +558,8 @@ class EasyClicker(ctk.CTk):
             return
 
         setattr(self, mode, data)
-        btn_map[mode].configure(text=f"[{data['display']}]  (Click to Set)", fg_color=color_map[mode])
+        txt_color = "#FFFFFF" if mode in ('ac_target', 'hold_target') else ("#1F2937", "#F3F4F6")
+        btn_map[mode].configure(text=f"[{data['display']}]  (Click to Set)", fg_color=color_map[mode], text_color=txt_color)
 
         self.binding_mode = None
         self.bind_cooldown = time.time() + 0.1
@@ -521,7 +569,7 @@ class EasyClicker(ctk.CTk):
     def toggle_autoclicker(self):
         if self.hold_active: return
         self.clicker_active = not self.clicker_active
-        txt, color = ("Status: ACTIVE", "#10B981") if self.clicker_active else ("Status: STOPPED", "#EF4444")
+        txt, color = ("Status: ACTIVE", ("#059669", "#10B981")) if self.clicker_active else ("Status: STOPPED", ("#DC2626", "#EF4444"))
         self.ac_status_lbl.configure(text=txt, text_color=color)
 
         if self.clicker_active:
@@ -530,7 +578,7 @@ class EasyClicker(ctk.CTk):
     def toggle_hold(self):
         if self.clicker_active: return
         self.hold_active = not self.hold_active
-        txt, color = ("Status: ACTIVE", "#10B981") if self.hold_active else ("Status: STOPPED", "#EF4444")
+        txt, color = ("Status: ACTIVE", ("#059669", "#10B981")) if self.hold_active else ("Status: STOPPED", ("#DC2626", "#EF4444"))
         self.hold_status_lbl.configure(text=txt, text_color=color)
 
         if self.hold_active:
@@ -602,5 +650,4 @@ if __name__ == "__main__":
     app = EasyClicker()
     app.mainloop()
 
-# PyInstaller build command (onedir for installer):
-# pyinstaller --onefile --noconsole --icon=icon.ico --add-data "icon.ico;." --collect-all customtkinter --name "EasyClicker" main.py
+# pyinstaller --onedir --noconsole --icon=icon.ico --add-data "icon.ico;." --collect-all customtkinter --name "EasyClicker" main.py

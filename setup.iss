@@ -1,6 +1,6 @@
 [Setup]
 AppName=EasyClicker
-AppVersion=1.0.3
+AppVersion=1.0.4
 AppPublisher=Easy click studio
 AppPublisherURL=https://github.com/EasyClicker/EasyClicker
 DefaultDirName={autopf}\EasyClicker
@@ -10,21 +10,21 @@ UninstallDisplayName=EasyClicker
 Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir=.\
-OutputBaseFilename=EasyClicker_Setup_v1.0.3
+OutputBaseFilename=EasyClicker_Setup_v1.0.4
 SetupIconFile=icon.ico
 
 VersionInfoCompany=Easy click studio
 VersionInfoDescription=EasyClicker Installer
-VersionInfoTextVersion=1.0.3
-VersionInfoVersion=1.0.3
+VersionInfoTextVersion=1.0.4
+VersionInfoVersion=1.0.4
 VersionInfoCopyright=Copyright (C) 2026 Easy click studio
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-; Забираем один исполняемый файл из папки dist
-Source: "dist\EasyClicker.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Забираем всю папку, которую сгенерировал PyInstaller с флагом --onedir
+Source: "dist\EasyClicker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
