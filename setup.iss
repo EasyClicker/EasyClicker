@@ -1,6 +1,6 @@
 [Setup]
 AppName=EasyClicker
-AppVersion=1.0.4
+AppVersion=1.0.5
 AppPublisher=Easy click studio
 AppPublisherURL=https://github.com/EasyClicker/EasyClicker
 DefaultDirName={autopf}\EasyClicker
@@ -10,13 +10,13 @@ UninstallDisplayName=EasyClicker
 Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir=.\
-OutputBaseFilename=EasyClicker_Setup_v1.0.4
+OutputBaseFilename=EasyClicker_Setup_v1.0.5
 SetupIconFile=icon.ico
 
 VersionInfoCompany=Easy click studio
 VersionInfoDescription=EasyClicker Installer
-VersionInfoTextVersion=1.0.4
-VersionInfoVersion=1.0.4
+VersionInfoTextVersion=1.0.5
+VersionInfoVersion=1.0.5
 VersionInfoCopyright=Copyright (C) 2026 Easy click studio
 
 [Tasks]
