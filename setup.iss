@@ -1,6 +1,6 @@
 [Setup]
 AppName=EasyClicker
-AppVersion=1.0.6
+AppVersion=1.0.7
 AppPublisher=Easy click studio
 AppPublisherURL=https://github.com/EasyClickStudio/EasyClicker
 DefaultDirName={autopf}\EasyClicker
@@ -10,7 +10,7 @@ UninstallDisplayName=EasyClicker
 Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir=.\
-OutputBaseFilename=EasyClicker_Setup_v1.0.6
+OutputBaseFilename=EasyClicker_Setup_v1.0.7
 SetupIconFile=icon.ico
 
 ; Принудительно запрашиваем права админа для корректной записи ярлыков
@@ -21,8 +21,8 @@ AppMutex=EasyClicker_Unique_App_Mutex_2026
 
 VersionInfoCompany=Easy click studio
 VersionInfoDescription=EasyClicker Installer
-VersionInfoTextVersion=1.0.6
-VersionInfoVersion=1.0.6
+VersionInfoTextVersion=1.0.7
+VersionInfoVersion=1.0.7
 VersionInfoCopyright=Copyright (C) 2026 Easy click studio
 
 [Tasks]
