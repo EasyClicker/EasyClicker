@@ -12,11 +12,7 @@ SolidCompression=yes
 OutputDir=.\
 OutputBaseFilename=EasyClicker_Setup_v1.0.7
 SetupIconFile=icon.ico
-
-; Принудительно запрашиваем права админа для корректной записи ярлыков
 PrivilegesRequired=admin
-
-; Проверка мьютекса из main.py — не даст установить поверх работающего кликера
 AppMutex=EasyClicker_Unique_App_Mutex_2026
 
 VersionInfoCompany=Easy click studio
