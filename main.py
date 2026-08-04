@@ -1317,3 +1317,8 @@ class EasyClicker(ctk.CTk):
 if __name__ == "__main__":
     app = EasyClicker()
     app.mainloop()
+
+# Windows:
+# pyinstaller --noconsole --onefile --icon=icon.ico main.py
+# Linux:
+# pyinstaller --onefile --icon=icon.png main.py
