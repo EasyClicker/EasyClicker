@@ -1319,6 +1319,6 @@ if __name__ == "__main__":
     app.mainloop()
 
 # Windows:
-# pyinstaller --noconsole --onefile --icon=icon.ico main.py
+# pyinstaller --noconsole --onedir --icon=icon.ico main.py
 # Linux:
 # pyinstaller --onefile --icon=icon.png main.py
