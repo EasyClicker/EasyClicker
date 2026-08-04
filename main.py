@@ -1,7 +1,6 @@
 import time
 import random
 import threading
-import ctypes
 import os
 import sys
 import json
@@ -11,30 +10,18 @@ from pynput import mouse, keyboard
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, KeyCode, Controller as KeyboardController
 
-# === SINGLE INSTANCE CHECK ===
-ERROR_ALREADY_EXISTS = 183
-mutex_name = "EasyClicker_Unique_App_Mutex_2026"
-kernel32 = ctypes.windll.kernel32
-mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
-
-if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-    sys.exit(0)
-
-# Set explicit AppUserModelID for Windows taskbar icon binding
-try:
-    myappid = 'EasyClicker.AutoClicker.App.1'
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-except Exception:
-    pass
-
-# Default theme configuration
-ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue")
+# === ОПРЕДЕЛЕНИЕ ПЛАТФОРМЫ ===
+IS_WINDOWS = sys.platform == "win32"
 
 
-# --- CONFIG & CACHE DIRECTORY IN APPDATA ---
+# --- ДИРЕКТОРИЯ КОНФИГУРАЦИИ В ЗАВИСИМОСТИ ОТ ОС ---
 def get_app_dir():
-    appdata_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'EasyClicker')
+    if IS_WINDOWS:
+        base_dir = os.environ.get('APPDATA', os.path.expanduser('~'))
+    else:
+        base_dir = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
+
+    appdata_dir = os.path.join(base_dir, 'EasyClicker')
     os.makedirs(appdata_dir, exist_ok=True)
     return appdata_dir
 
@@ -42,7 +29,39 @@ def get_app_dir():
 APP_DIR = get_app_dir()
 CONFIG_FILE = os.path.join(APP_DIR, 'easyclicker_config.json')
 
-# --- GLOBAL RESOURCE CACHE IN MEMORY ---
+# === ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА (SINGLE INSTANCE CHECK) ===
+_GLOBAL_LOCK_FILE = None
+
+if IS_WINDOWS:
+    import ctypes
+
+    ERROR_ALREADY_EXISTS = 183
+    mutex_name = "EasyClicker_Unique_App_Mutex_2026"
+    kernel32 = ctypes.windll.kernel32
+    mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
+
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        sys.exit(0)
+
+    try:
+        myappid = 'EasyClicker.AutoClicker.App.1'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception:
+        pass
+else:
+    import fcntl
+
+    lock_file_path = os.path.join(APP_DIR, 'easyclicker.lock')
+    try:
+        _GLOBAL_LOCK_FILE = open(lock_file_path, 'w')
+        fcntl.flock(_GLOBAL_LOCK_FILE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        sys.exit(0)
+
+# Настройки темы по умолчанию
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
 _RESOURCE_PATH_CACHE = {}
 _GEAR_ICON_CACHE = None
 
@@ -63,17 +82,33 @@ def get_resource_path(relative_path):
 
 
 def set_window_icon(window):
-    icon_path = get_resource_path("icon.ico")
-    if os.path.exists(icon_path):
+    icon_png = get_resource_path("icon.png")
+    icon_ico = get_resource_path("icon.ico")
+
+    if IS_WINDOWS and os.path.exists(icon_ico):
         try:
-            window.iconbitmap(icon_path)
+            window.iconbitmap(icon_ico)
+            return
+        except Exception:
+            pass
+
+    target_path = icon_png if os.path.exists(icon_png) else icon_ico
+    if os.path.exists(target_path):
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(target_path)
+            photo = ImageTk.PhotoImage(img)
+            window.wm_iconphoto(True, photo)
+            window._icon_photo_ref = photo
         except Exception:
             pass
 
 
 def disable_maximize_button(window):
-    """ Completely disables the Maximize button via Windows API """
+    if not IS_WINDOWS:
+        return
     try:
+        import ctypes
         window.update_idletasks()
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
         if not hwnd:
@@ -87,31 +122,29 @@ def disable_maximize_button(window):
         pass
 
 
-# --- 23+ LANGUAGES LOCALIZATION ---
+def get_windows_workarea():
+    """ Получает точные границы рабочей области экрана (исключая панель задач) """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            class RECT(ctypes.Structure):
+                _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long),
+                            ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+            rect = RECT()
+            ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0)
+            return rect.right, rect.bottom
+        except Exception:
+            pass
+    return None, None
+
+
+# --- LOCALIZATION ---
 LANG_MAPPING = {
-    "English": "EN",
-    "Русский": "RU",
-    "Español": "ES",
-    "Deutsch": "DE",
-    "Français": "FR",
-    "中文": "ZH",
-    "日本語": "JA",
-    "한국어": "KO",
-    "Português": "PT",
-    "Italiano": "IT",
-    "Polski": "PL",
-    "Türkçe": "TR",
-    "Українська": "UK",
-    "Nederlands": "NL",
-    "العربية": "AR",
-    "हिन्दी": "HI",
-    "Tiếng Việt": "VI",
-    "ไทย": "TH",
-    "Bahasa Indonesia": "ID",
-    "Čeština": "CS",
-    "Magyar": "HU",
-    "Română": "RO",
-    "Svenska": "SV"
+    "English": "EN", "Русский": "RU", "Español": "ES", "Deutsch": "DE", "Français": "FR",
+    "中文": "ZH", "日本語": "JA", "한국어": "KO", "Português": "PT", "Italiano": "IT",
+    "Polski": "PL", "Türkçe": "TR", "Українська": "UK", "Nederlands": "NL", "العربية": "AR",
+    "हिन्दी": "HI", "Tiếng Việt": "VI", "ไทย": "TH", "Bahasa Indonesia": "ID", "Čeština": "CS",
+    "Magyar": "HU", "Română": "RO", "Svenska": "SV"
 }
 
 CODE_TO_LANG = {v: k for k, v in LANG_MAPPING.items()}
@@ -119,261 +152,329 @@ CODE_TO_LANG = {v: k for k, v in LANG_MAPPING.items()}
 TRANSLATIONS = {
     'EN': {
         'settings': ' Settings', 'settings_title': 'Settings', 'app_settings': 'Application Settings',
-        'always_on_top': 'Always on Top', 'app_theme': 'App Theme:', 'app_lang': 'Language:', 'close': 'Close',
+        'always_on_top': 'Always on Top', 'toast_notifications': 'Screen Notifications',
+        'app_theme': 'App Theme:', 'app_lang': 'Language:', 'close': 'Close',
         'theme_dark': 'Dark', 'theme_light': 'Light', 'theme_system': 'System',
         'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Click Target:', 'click_interval': 'Click Interval (ms):',
         'random_offset': 'Random Offset (± ms):', 'hotkey': 'Global Start/Stop Hotkey:', 'hold_mode': '✊ HOLD MODE',
         'hold_target': 'Hold Target:', 'hold_type': 'Hold Type:', 'hold_duration': 'Hold Duration (sec):',
-        'pause_interval': 'Pause Interval (sec):', 'status_stopped': 'Status: STOPPED', 'status_active': 'Status: ACTIVE',
-        'click_to_set': 'Click to Set', 'press_key_mouse': '>> PRESS ANY KEY / MOUSE <<', 'press_hotkey': '>> PRESS HOTKEY <<',
-        'continuous_hold': 'Continuous Hold', 'interval_hold': 'Interval Hold'
+        'pause_interval': 'Pause Interval (sec):', 'status_stopped': 'Status: STOPPED',
+        'status_active': 'Status: ACTIVE', 'click_to_set': 'Click to Set', 'press_key_mouse': '>> PRESS ANY KEY / MOUSE <<',
+        'press_hotkey': '>> PRESS HOTKEY <<', 'continuous_hold': 'Continuous Hold', 'interval_hold': 'Interval Hold',
+        'autoclicker_on': '⚡ Autoclicker: ACTIVE', 'autoclicker_off': '⚡ Autoclicker: STOPPED',
+        'hold_on': '✊ Hold Mode: ACTIVE', 'hold_off': '✊ Hold Mode: STOPPED'
     },
     'RU': {
         'settings': ' Настройки', 'settings_title': 'Настройки', 'app_settings': 'Настройки приложения',
-        'always_on_top': 'Поверх всех окон', 'app_theme': 'Тема оформления:', 'app_lang': 'Язык интерфейса:', 'close': 'Закрыть',
+        'always_on_top': 'Поверх всех окон', 'toast_notifications': 'Экранные уведомления',
+        'app_theme': 'Тема оформления:', 'app_lang': 'Язык интерфейса:', 'close': 'Закрыть',
         'theme_dark': 'Тёмная', 'theme_light': 'Светлая', 'theme_system': 'Системная',
         'autoclicker': '⚡ АВТОКЛИКЕР', 'click_target': 'Цель клика:', 'click_interval': 'Интервал клика (мс):',
         'random_offset': 'Разброс (± мс):', 'hotkey': 'Горячая клавиша:', 'hold_mode': '✊ РЕЖИМ УДЕРЖАНИЯ',
         'hold_target': 'Цель зажатия:', 'hold_type': 'Тип зажатия:', 'hold_duration': 'Длительность (сек):',
         'pause_interval': 'Пауза (сек):', 'status_stopped': 'Статус: ОСТАНОВЛЕН', 'status_active': 'Статус: АКТИВЕН',
-        'click_to_set': 'Клик для выбора', 'press_key_mouse': '>> НАЖМИТЕ КЛАВИШУ / МЫШЬ <<', 'press_hotkey': '>> НАЖМИТЕ ХОТКЕЙ <<',
-        'continuous_hold': 'Зажатие', 'interval_hold': 'Интервальное зажатие'
+        'click_to_set': 'Клик для выбора', 'press_key_mouse': '>> НАЖМИТЕ КЛАВИШУ / МЫШЬ <<',
+        'press_hotkey': '>> НАЖМИТЕ ХОТКЕЙ <<', 'continuous_hold': 'Зажатие', 'interval_hold': 'Интервальное зажатие',
+        'autoclicker_on': '⚡ Автокликер: ВКЛЮЧЕН', 'autoclicker_off': '⚡ Автокликер: ВЫКЛЮЧЕН',
+        'hold_on': '✊ Режим удержания: ВКЛЮЧЕН', 'hold_off': '✊ Режим удержания: ВЫКЛЮЧЕН'
     },
     'ES': {
-        'settings': ' Ajustes', 'settings_title': 'Ajustes', 'app_settings': 'Ajustes de la aplicación',
-        'always_on_top': 'Siempre visible', 'app_theme': 'Tema:', 'app_lang': 'Idioma:', 'close': 'Cerrar',
+        'settings': ' Configuración', 'settings_title': 'Configuración', 'app_settings': 'Ajustes de la aplicación',
+        'always_on_top': 'Siempre en primer plano', 'toast_notifications': 'Notificaciones de pantalla',
+        'app_theme': 'Tema de la app:', 'app_lang': 'Idioma:', 'close': 'Cerrar',
         'theme_dark': 'Oscuro', 'theme_light': 'Claro', 'theme_system': 'Sistema',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Objetivo del clic:', 'click_interval': 'Intervalo (ms):',
-        'random_offset': 'Variación (± ms):', 'hotkey': 'Tecla de inicio/paro:', 'hold_mode': '✊ MODO MANTENER',
-        'hold_target': 'Objetivo de pulsación:', 'hold_type': 'Tipo de pulsación:', 'hold_duration': 'Duración (seg):',
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Objetivo de clic:', 'click_interval': 'Intervalo de clic (ms):',
+        'random_offset': 'Desviación aleatoria (± ms):', 'hotkey': 'Tecla rápida de inicio/paro:', 'hold_mode': '✊ MODO MANTENER',
+        'hold_target': 'Objetivo de retención:', 'hold_type': 'Tipo de retención:', 'hold_duration': 'Duración (seg):',
         'pause_interval': 'Pausa (seg):', 'status_stopped': 'Estado: DETENIDO', 'status_active': 'Estado: ACTIVO',
-        'click_to_set': 'Clic para definir', 'press_key_mouse': '>> PRESIONE TECLA / MOUSE <<', 'press_hotkey': '>> PRESIONE TECLA <<',
-        'continuous_hold': 'Pulsación continua', 'interval_hold': 'Pulsación por intervalos'
+        'click_to_set': 'Clic para fijar', 'press_key_mouse': '>> PRESIONE TECLA / MOUSE <<',
+        'press_hotkey': '>> PRESIONE TECLA RÁPIDA <<', 'continuous_hold': 'Mantenimiento continuo', 'interval_hold': 'Mantenimiento por intervalos',
+        'autoclicker_on': '⚡ Autoclicker: ACTIVO', 'autoclicker_off': '⚡ Autoclicker: DETENIDO',
+        'hold_on': '✊ Modo mantener: ACTIVO', 'hold_off': '✊ Modo mantener: DETENIDO'
     },
     'DE': {
         'settings': ' Einstellungen', 'settings_title': 'Einstellungen', 'app_settings': 'Anwendungseinstellungen',
-        'always_on_top': 'Immer im Vordergrund', 'app_theme': 'Design:', 'app_lang': 'Sprache:', 'close': 'Schließen',
+        'always_on_top': 'Immer im Vordergrund', 'toast_notifications': 'Bildschirmbenachrichtigungen',
+        'app_theme': 'App-Design:', 'app_lang': 'Sprache:', 'close': 'Schließen',
         'theme_dark': 'Dunkel', 'theme_light': 'Hell', 'theme_system': 'System',
         'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Klick-Ziel:', 'click_interval': 'Klick-Intervall (ms):',
-        'random_offset': 'Zufalls-Offset (± ms):', 'hotkey': 'Start/Stopp Hotkey:', 'hold_mode': '✊ HALTE-MODUS',
-        'hold_target': 'Halte-Ziel:', 'hold_type': 'Halte-Typ:', 'hold_duration': 'Dauer (Sek):',
-        'pause_interval': 'Pause (Sek):', 'status_stopped': 'Status: GESTOPPT', 'status_active': 'Status: AKTIV',
-        'click_to_set': 'Klick zum Festlegen', 'press_key_mouse': '>> TASTE / MAUS DRÜCKEN <<', 'press_hotkey': '>> HOTKEY DRÜCKEN <<',
-        'continuous_hold': 'Dauerhaftes Halten', 'interval_hold': 'Intervall-Halten'
+        'random_offset': 'Zufallsabweichung (± ms):', 'hotkey': 'Start/Stopp-Hotkey:', 'hold_mode': '✊ HALTEMODUS',
+        'hold_target': 'Halte-Ziel:', 'hold_type': 'Halte-Typ:', 'hold_duration': 'Haltedauer (Sek):',
+        'pause_interval': 'Pausenintervall (Sek):', 'status_stopped': 'Status: GESTOPPT', 'status_active': 'Status: AKTIV',
+        'click_to_set': 'Klick zum Festlegen', 'press_key_mouse': '>> TASTE / MAUS DRÜCKEN <<',
+        'press_hotkey': '>> HOTKEY DRÜCKEN <<', 'continuous_hold': 'Dauerhaftes Halten', 'interval_hold': 'Intervall-Halten',
+        'autoclicker_on': '⚡ Autoclicker: AKTIV', 'autoclicker_off': '⚡ Autoclicker: GESTOPPT',
+        'hold_on': '✊ Haltemodus: AKTIV', 'hold_off': '✊ Haltemodus: GESTOPPT'
     },
     'FR': {
-        'settings': ' Options', 'settings_title': 'Options', 'app_settings': "Paramètres de l'application",
-        'always_on_top': 'Toujours au-dessus', 'app_theme': 'Thème:', 'app_lang': 'Langue:', 'close': 'Fermer',
+        'settings': ' Paramètres', 'settings_title': 'Paramètres', 'app_settings': 'Paramètres de l\'application',
+        'always_on_top': 'Toujours au-dessus', 'toast_notifications': 'Notifications à l\'écran',
+        'app_theme': 'Thème de l\'app:', 'app_lang': 'Langue:', 'close': 'Fermer',
         'theme_dark': 'Sombre', 'theme_light': 'Clair', 'theme_system': 'Système',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Cible du clic:', 'click_interval': 'Intervalle (ms):',
-        'random_offset': 'Décalage (± ms):', 'hotkey': 'Raccourci Début/Fin:', 'hold_mode': '✊ MODE MAINTIEN',
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Cible du clic:', 'click_interval': 'Intervalle de clic (ms):',
+        'random_offset': 'Marge aléatoire (± ms):', 'hotkey': 'Raccourci Début/Fin:', 'hold_mode': '✊ MODE MAINTIEN',
         'hold_target': 'Cible de maintien:', 'hold_type': 'Type de maintien:', 'hold_duration': 'Durée (sec):',
-        'pause_interval': 'Pause (sec):', 'status_stopped': 'Statut: ARRÊTÉ', 'status_active': 'Statut: ACTIF',
-        'click_to_set': 'Cliquer pour régler', 'press_key_mouse': '>> APPUYER TOUCHE / SOURIS <<', 'press_hotkey': '>> APPUYER RACCOURCI <<',
-        'continuous_hold': 'Maintien continu', 'interval_hold': 'Maintien par intervalle'
+        'pause_interval': 'Intervalle de pause (sec):', 'status_stopped': 'Statut: ARRÊTÉ', 'status_active': 'Statut: ACTIF',
+        'click_to_set': 'Cliquer pour définir', 'press_key_mouse': '>> APPUYEZ SUR TOUCHES / SOURIS <<',
+        'press_hotkey': '>> APPUYEZ SUR LE RACCOURCI <<', 'continuous_hold': 'Maintien continu', 'interval_hold': 'Maintien par intervalles',
+        'autoclicker_on': '⚡ Autoclicker: ACTIF', 'autoclicker_off': '⚡ Autoclicker: ARRÊTÉ',
+        'hold_on': '✊ Mode maintien: ACTIF', 'hold_off': '✊ Mode maintien: ARRÊTÉ'
     },
     'ZH': {
         'settings': ' 设置', 'settings_title': '设置', 'app_settings': '应用程序设置',
-        'always_on_top': '窗口置顶', 'app_theme': '主题:', 'app_lang': '语言:', 'close': '关闭',
-        'theme_dark': '深色', 'theme_light': '浅色', 'theme_system': '跟随系统',
-        'autoclicker': '⚡ 自动点击器', 'click_target': '点击目标:', 'click_interval': '点击间隔 (毫秒):',
-        'random_offset': '随机偏差 (± 毫秒):', 'hotkey': '全局启动/停止热键:', 'hold_mode': '✊ 长按模式',
-        'hold_target': '长按目标:', 'hold_type': '长按类型:', 'hold_duration': '持续时间 (秒):',
-        'pause_interval': '暂停间隔 (秒):', 'status_stopped': '状态: 已停止', 'status_active': '状态: 运行中',
-        'click_to_set': '点击设置', 'press_key_mouse': '>> 请按下任意按键或鼠标 <<', 'press_hotkey': '>> 请按下热键 <<',
-        'continuous_hold': '连续长按', 'interval_hold': '间隔长按'
+        'always_on_top': '窗口置顶', 'toast_notifications': '屏幕通知',
+        'app_theme': '界面主题:', 'app_lang': '界面语言:', 'close': '关闭',
+        'theme_dark': '深色模式', 'theme_light': '浅色模式', 'theme_system': '跟随系统',
+        'autoclicker': '⚡ 连点器', 'click_target': '点击目标:', 'click_interval': '点击间隔 (毫秒):',
+        'random_offset': '随机偏移 (±毫秒):', 'hotkey': '全局启动/停止热键:', 'hold_mode': '✊ 长按模式',
+        'hold_target': '按住目标:', 'hold_type': '长按类型:', 'hold_duration': '按住时间 (秒):',
+        'pause_interval': '间隔暂停 (秒):', 'status_stopped': '状态: 已停止', 'status_active': '状态: 运行中',
+        'click_to_set': '点击设置', 'press_key_mouse': '>> 请按下任意按键或鼠标键 <<',
+        'press_hotkey': '>> 请按下热键 <<', 'continuous_hold': '持续长按', 'interval_hold': '循环长按',
+        'autoclicker_on': '⚡ 连点器: 已激活', 'autoclicker_off': '⚡ 连点器: 已停止',
+        'hold_on': '✊ 长按模式: 已激活', 'hold_off': '✊ 长按模式: 已停止'
     },
     'JA': {
         'settings': ' 設定', 'settings_title': '設定', 'app_settings': 'アプリ設定',
-        'always_on_top': '最前線に表示', 'app_theme': 'テーマ:', 'app_lang': '言語:', 'close': '閉じる',
-        'theme_dark': 'ダーク', 'theme_light': 'ライト', 'theme_system': 'システム',
-        'autoclicker': '⚡ オートクリッカー', 'click_target': 'クリック対象:', 'click_interval': '間隔 (ミリ秒):',
-        'random_offset': 'ランダム偏差 (± ms):', 'hotkey': '開始/停止ホットキー:', 'hold_mode': '✊ ホールドモード',
-        'hold_target': 'ホールド対象:', 'hold_type': 'ホールドタイプ:', 'hold_duration': '保持時間 (秒):',
-        'pause_interval': '停止時間 (秒):', 'status_stopped': 'ステータス: 停止中', 'status_active': 'ステータス: 動作中',
-        'click_to_set': 'クリックして設定', 'press_key_mouse': '>> キーまたはマウスを押してください <<', 'press_hotkey': '>> ホットキーを押してください <<',
-        'continuous_hold': '継続ホールド', 'interval_hold': 'インターバルホールド'
+        'always_on_top': '最前面表示', 'toast_notifications': '画面通知',
+        'app_theme': 'テーマ:', 'app_lang': '言語:', 'close': '閉じる',
+        'theme_dark': 'ダーク', 'theme_light': 'ライト', 'theme_system': '系统設定',
+        'autoclicker': '⚡ 連打ツール', 'click_target': 'クリック対象:', 'click_interval': 'クリック間隔 (ms):',
+        'random_offset': 'ランダム振れ幅 (± ms):', 'hotkey': '開始/停止ショートカット:', 'hold_mode': '✊ 长押しモード',
+        'hold_target': '长押し対象:', 'hold_type': '长押しタイプ:', 'hold_duration': '保持時間 (秒):',
+        'pause_interval': '一時停止時間 (秒):', 'status_stopped': 'ステータス: 停止中', 'status_active': 'ステータス: 動作中',
+        'click_to_set': 'クリックして設定', 'press_key_mouse': '>> キーまたはマウスを押してください <<',
+        'press_hotkey': '>> ショートカットキーを押してください <<', 'continuous_hold': '継続保持', 'interval_hold': 'インターバル保持',
+        'autoclicker_on': '⚡ 連打ツール: 作動中', 'autoclicker_off': '⚡ 連打ツール: 停止中',
+        'hold_on': '✊ 长押しモード: 作動中', 'hold_off': '✊ 长押しモード: 停止中'
     },
     'KO': {
         'settings': ' 설정', 'settings_title': '설정', 'app_settings': '애플리케이션 설정',
-        'always_on_top': '항상 위', 'app_theme': '테마:', 'app_lang': '언어:', 'close': '닫기',
-        'theme_dark': '다크', 'theme_light': '라이트', 'theme_system': '시스템',
+        'always_on_top': '항상 위', 'toast_notifications': '화면 알림',
+        'app_theme': '앱 테마:', 'app_lang': '언어:', 'close': '닫기',
+        'theme_dark': '다크', 'theme_light': '라이트', 'theme_system': '시스템 설정',
         'autoclicker': '⚡ 오토클리커', 'click_target': '클릭 대상:', 'click_interval': '클릭 간격 (ms):',
-        'random_offset': '무작위 오차 (± ms):', 'hotkey': '시작/중지 단축키:', 'hold_mode': '✊ 홀드 모드',
+        'random_offset': '랜덤 오프셋 (± ms):', 'hotkey': '전작 시작/중지 단축키:', 'hold_mode': '✊ 홀드 모드',
         'hold_target': '홀드 대상:', 'hold_type': '홀드 유형:', 'hold_duration': '유지 시간 (초):',
-        'pause_interval': '일시중지 (초):', 'status_stopped': '상태: 정지됨', 'status_active': '상태: 작동 중',
-        'click_to_set': '클릭하여 설정', 'press_key_mouse': '>> 키 또는 마우스를 누르세요 <<', 'press_hotkey': '>> 단축키를 누르세요 <<',
-        'continuous_hold': '연속 홀드', 'interval_hold': '간격 홀드'
+        'pause_interval': '일시 중지 간격 (초):', 'status_stopped': '상태: 정지됨', 'status_active': '상태: 작동 중',
+        'click_to_set': '클릭하여 설정', 'press_key_mouse': '>> 키 또는 마우스를 누르세요 <<',
+        'press_hotkey': '>> 단축키를 누르세요 <<', 'continuous_hold': '연속 홀드', 'interval_hold': '간격 홀드',
+        'autoclicker_on': '⚡ 오토클리커: 활성화됨', 'autoclicker_off': '⚡ 오토클리커: 비활성화됨',
+        'hold_on': '✊ 홀드 모드: 활성화됨', 'hold_off': '✊ 홀드 모드: 비활성화됨'
     },
     'PT': {
         'settings': ' Configurações', 'settings_title': 'Configurações', 'app_settings': 'Configurações do Aplicativo',
-        'always_on_top': 'Sempre no topo', 'app_theme': 'Tema:', 'app_lang': 'Idioma:', 'close': 'Fechar',
+        'always_on_top': 'Sempre no topo', 'toast_notifications': 'Notificações na tela',
+        'app_theme': 'Tema do app:', 'app_lang': 'Idioma:', 'close': 'Fechar',
         'theme_dark': 'Escuro', 'theme_light': 'Claro', 'theme_system': 'Sistema',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Alvo do clique:', 'click_interval': 'Intervalo (ms):',
-        'random_offset': 'Variação (± ms):', 'hotkey': 'Atalho Iniciar/Parar:', 'hold_mode': '✊ MODO MANTER',
-        'hold_target': 'Alvo da pressão:', 'hold_type': 'Tipo de pressão:', 'hold_duration': 'Duração (seg):',
-        'pause_interval': 'Pausa (seg):', 'status_stopped': 'Status: PARADO', 'status_active': 'Status: ATIVO',
-        'click_to_set': 'Clique para definir', 'press_key_mouse': '>> PRESSIONE TECLA / MOUSE <<', 'press_hotkey': '>> PRESSIONE O ATALHO <<',
-        'continuous_hold': 'Pressão contínua', 'interval_hold': 'Pressão por intervalo'
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Alvo do clique:', 'click_interval': 'Intervalo de clique (ms):',
+        'random_offset': 'Desvio aleatório (± ms):', 'hotkey': 'Atalho Global Iniciar/Parar:', 'hold_mode': '✊ MODO MANTER',
+        'hold_target': 'Alvo de retenção:', 'hold_type': 'Tipo de retenção:', 'hold_duration': 'Duração (seg):',
+        'pause_interval': 'Intervalo de pausa (seg):', 'status_stopped': 'Status: PARADO', 'status_active': 'Status: ATIVO',
+        'click_to_set': 'Clique para definir', 'press_key_mouse': '>> PRESSIONE TECLA / MOUSE <<',
+        'press_hotkey': '>> PRESSIONE O ATALHO <<', 'continuous_hold': 'Retenção contínua', 'interval_hold': 'Retenção por intervalo',
+        'autoclicker_on': '⚡ Autoclicker: ATIVO', 'autoclicker_off': '⚡ Autoclicker: PARADO',
+        'hold_on': '✊ Modo manter: ATIVO', 'hold_off': '✊ Modo manter: PARADO'
     },
     'IT': {
-        'settings': ' Impostazioni', 'settings_title': 'Impostazioni', 'app_settings': "Impostazioni dell'applicazione",
-        'always_on_top': 'Sempre in primo piano', 'app_theme': 'Tema:', 'app_lang': 'Lingua:', 'close': 'Chiudi',
+        'settings': ' Impostazioni', 'settings_title': 'Impostazioni', 'app_settings': 'Impostazioni applicazione',
+        'always_on_top': 'Sempre in primo piano', 'toast_notifications': 'Notifiche sullo schermo',
+        'app_theme': 'Tema dell\'app:', 'app_lang': 'Lingua:', 'close': 'Chiudi',
         'theme_dark': 'Scuro', 'theme_light': 'Chiaro', 'theme_system': 'Sistema',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Obiettivo click:', 'click_interval': 'Intervallo (ms):',
-        'random_offset': 'Variazione (± ms):', 'hotkey': 'Tasto Avvio/Arresto:', 'hold_mode': '✊ MODALITÀ PRESSIONE',
-        'hold_target': 'Obiettivo pressione:', 'hold_type': 'Tipo pressione:', 'hold_duration': 'Durata (sec):',
-        'pause_interval': 'Pausa (sec):', 'status_stopped': 'Stato: FERMATO', 'status_active': 'Stato: ATTIVO',
-        'click_to_set': 'Clicca per impostare', 'press_key_mouse': '>> PREMI UN TASTO / MOUSE <<', 'press_hotkey': '>> PREMI IL TASTO RAPIDO <<',
-        'continuous_hold': 'Pressione continua', 'interval_hold': 'Pressione a intervalli'
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Obiettivo del click:', 'click_interval': 'Intervallo di click (ms):',
+        'random_offset': 'Deviazione casuale (± ms):', 'hotkey': 'Scorciatoia Avvia/Resta:', 'hold_mode': '✊ MODALITÀ PRESSIONE',
+        'hold_target': 'Obiettivo pressione:', 'hold_type': 'Tipo di pressione:', 'hold_duration': 'Durata (sec):',
+        'pause_interval': 'Intervallo di pausa (sec):', 'status_stopped': 'Stato: FERMATO', 'status_active': 'Stato: ATTIVO',
+        'click_to_set': 'Clicca per impostare', 'press_key_mouse': '>> PREMI UN TASTO / MOUSE <<',
+        'press_hotkey': '>> PREMI LA SCORCIATOIA <<', 'continuous_hold': 'Pressione continua', 'interval_hold': 'Pressione a intervalli',
+        'autoclicker_on': '⚡ Autoclicker: ATTIVO', 'autoclicker_off': '⚡ Autoclicker: FERMATO',
+        'hold_on': '✊ Modalità pressione: ATTIVA', 'hold_off': '✊ Modalità pressione: FERMATA'
     },
     'PL': {
         'settings': ' Ustawienia', 'settings_title': 'Ustawienia', 'app_settings': 'Ustawienia aplikacji',
-        'always_on_top': 'Zawsze na wierzchu', 'app_theme': 'Motyw:', 'app_lang': 'Język:', 'close': 'Zamknij',
+        'always_on_top': 'Zawsze na wierzchu', 'toast_notifications': 'Powiadomienia ekranowe',
+        'app_theme': 'Motyw aplikacji:', 'app_lang': 'Język interfejsu:', 'close': 'Zamknij',
         'theme_dark': 'Ciemny', 'theme_light': 'Jasny', 'theme_system': 'Systemowy',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Cel kliknięcia:', 'click_interval': 'Interwał (ms):',
-        'random_offset': 'Odchylenie (± ms):', 'hotkey': 'Skrót Start/Stop:', 'hold_mode': '✊ TRYB PRZYTRZYMANIA',
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Cel kliknięcia:', 'click_interval': 'Interwał kliknięcia (ms):',
+        'random_offset': 'Losowe odchylenie (± ms):', 'hotkey': 'Skrót klawiszowy Start/Stop:', 'hold_mode': '✊ TRYB PRZYTRZYMANIA',
         'hold_target': 'Cel przytrzymania:', 'hold_type': 'Typ przytrzymania:', 'hold_duration': 'Czas trwania (sek):',
         'pause_interval': 'Pauza (sek):', 'status_stopped': 'Status: ZATRZYMANY', 'status_active': 'Status: AKTYWNY',
-        'click_to_set': 'Kliknij, aby ustawić', 'press_key_mouse': '>> NACIŚNIJ KLAWISZ / MYSZ <<', 'press_hotkey': '>> NACIŚNIJ SKRÓT <<',
-        'continuous_hold': 'Ciągłe przytrzymanie', 'interval_hold': 'Interwałowe przytrzymanie'
+        'click_to_set': 'Kliknij, aby ustawić', 'press_key_mouse': '>> NACIŚNIJ KLAWISZ / MYSZ <<',
+        'press_hotkey': '>> NACIŚNIJ SKRÓT <<', 'continuous_hold': 'Ciągłe przytrzymanie', 'interval_hold': 'Przytrzymanie interwałowe',
+        'autoclicker_on': '⚡ Autoclicker: AKTYWNY', 'autoclicker_off': '⚡ Autoclicker: ZATRZYMANY',
+        'hold_on': '✊ Tryb przytrzymania: AKTYWNY', 'hold_off': '✊ Tryb przytrzymania: ZATRZYMANY'
     },
     'TR': {
         'settings': ' Ayarlar', 'settings_title': 'Ayarlar', 'app_settings': 'Uygulama Ayarları',
-        'always_on_top': 'Her zaman üstte', 'app_theme': 'Tema:', 'app_lang': 'Dil:', 'close': 'Kapat',
-        'theme_dark': 'Karanlık', 'theme_light': 'Aydınlık', 'theme_system': 'Sistem',
-        'autoclicker': '⚡ OTOMATİK TIKLAYICI', 'click_target': 'Tıklama Hedefi:', 'click_interval': 'Aralık (ms):',
-        'random_offset': 'Rastgele Sapma (± ms):', 'hotkey': 'Başlat/Durdur Kısayolu:', 'hold_mode': '✊ BASILI TUTMA MODU',
-        'hold_target': 'Tutma Hedefi:', 'hold_type': 'Tutma Türü:', 'hold_duration': 'Süre (sn):',
-        'pause_interval': 'Duraklatma (sn):', 'status_stopped': 'Durum: DURDURULDU', 'status_active': 'Durum: AKTİF',
-        'click_to_set': 'Ayarlamak için tıkla', 'press_key_mouse': '>> TUŞA VEYA FAREYE BASIN <<', 'press_hotkey': '>> KISAYOL TUŞUNA BASIN <<',
-        'continuous_hold': 'Sürekli Tutma', 'interval_hold': 'Aralıklı Tutma'
+        'always_on_top': 'Her zaman üstte', 'toast_notifications': 'Ekran bildirimleri',
+        'app_theme': 'Uygulama Teması:', 'app_lang': 'Dil:', 'close': 'Kapat',
+        'theme_dark': 'Karanlık', 'theme_light': 'Açık', 'theme_system': 'Sistem',
+        'autoclicker': '⚡ OTOMATİK TIKLAYICI', 'click_target': 'Tıklama Hedefi:', 'click_interval': 'Tıklama Aralığı (ms):',
+        'random_offset': 'Rastgele Sapma (± ms):', 'hotkey': 'Genel Başlat/Durdur Kısayolu:', 'hold_mode': '✊ BASILI TUTMA MODU',
+        'hold_target': 'Basılı Tutma Hedefi:', 'hold_type': 'Basılı Tutma Türü:', 'hold_duration': 'Süre (sn):',
+        'pause_interval': 'Duraklatma Aralığı (sn):', 'status_stopped': 'Durum: DURDURULDU', 'status_active': 'Durum: AKTİF',
+        'click_to_set': 'Ayarlamak için tıkla', 'press_key_mouse': '>> BİR TUŞA / FAREYE BASIN <<',
+        'press_hotkey': '>> KISAYOL TUŞUNA BASIN <<', 'continuous_hold': 'Sürekli Basılı Tutma', 'interval_hold': 'Aralıklı Basılı Tutma',
+        'autoclicker_on': '⚡ Otomatik Tıklayıcı: AKTİF', 'autoclicker_off': '⚡ Otomatik Tıklayıcı: DURDURULDU',
+        'hold_on': '✊ Basılı Tutma Modu: AKTİF', 'hold_off': '✊ Basılı Tutma Modu: DURDURULDU'
     },
     'UK': {
         'settings': ' Налаштування', 'settings_title': 'Налаштування', 'app_settings': 'Налаштування програми',
-        'always_on_top': 'Поверх усіх вікон', 'app_theme': 'Тема:', 'app_lang': 'Мова:', 'close': 'Закрити',
+        'always_on_top': 'Поверх усіх вікон', 'toast_notifications': 'Екранні сповіщення',
+        'app_theme': 'Тема оформлення:', 'app_lang': 'Мова інтерфейсу:', 'close': 'Закрити',
         'theme_dark': 'Темна', 'theme_light': 'Світла', 'theme_system': 'Системна',
-        'autoclicker': '⚡ АВТОКЛІКЕР', 'click_target': 'Ціль кліку:', 'click_interval': 'Інтервал кліку (мс):',
-        'random_offset': 'Розкид (± мс):', 'hotkey': 'Гаряча клавіша:', 'hold_mode': '✊ РЕЖИМ УТРИМАННЯ',
+        'autoclicker': '⚡ АВТОКЛІКЕР', 'click_target': 'Ціль кліка:', 'click_interval': 'Інтервал кліка (мс):',
+        'random_offset': 'Розподіл (± мс):', 'hotkey': 'Гаряча клавіша:', 'hold_mode': '✊ РЕЖИМ УТРИМАННЯ',
         'hold_target': 'Ціль утримання:', 'hold_type': 'Тип утримання:', 'hold_duration': 'Тривалість (сек):',
         'pause_interval': 'Пауза (сек):', 'status_stopped': 'Статус: ЗУПИНЕНО', 'status_active': 'Статус: АКТИВНИЙ',
-        'click_to_set': 'Клік для вибору', 'press_key_mouse': '>> НАТИСНІТЬ КЛАВІШУ / МИШУ <<', 'press_hotkey': '>> НАТИСНІТЬ ХОТКЕЙ <<',
-        'continuous_hold': 'Утримання', 'interval_hold': 'Інтервальне утримання'
+        'click_to_set': 'Клік для вибору', 'press_key_mouse': '>> НАТИСНІТЬ КЛАВІШУ / МИШУ <<',
+        'press_hotkey': '>> НАТИСНІТЬ ГАРЯЧУ КЛАВІШУ <<', 'continuous_hold': 'Утримання', 'interval_hold': 'Інтервальне утримання',
+        'autoclicker_on': '⚡ Автоклікер: УВІМКНЕНО', 'autoclicker_off': '⚡ Автоклікер: ВИМКНЕНО',
+        'hold_on': '✊ Режим утримання: УВІМКНЕНО', 'hold_off': '✊ Режим утримання: ВИМКНЕНО'
     },
     'NL': {
         'settings': ' Instellingen', 'settings_title': 'Instellingen', 'app_settings': 'Applicatie-instellingen',
-        'always_on_top': 'Altijd bovenaan', 'app_theme': 'Thema:', 'app_lang': 'Taal:', 'close': 'Sluiten',
+        'always_on_top': 'Altijd bovenaan', 'toast_notifications': 'Schermmeldingen',
+        'app_theme': 'App-thema:', 'app_lang': 'Taal:', 'close': 'Sluiten',
         'theme_dark': 'Donker', 'theme_light': 'Licht', 'theme_system': 'Systeem',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Klikdoel:', 'click_interval': 'Interval (ms):',
-        'random_offset': 'Willekeurige afwijking (± ms):', 'hotkey': 'Start/Stop Sneltoets:', 'hold_mode': '✊ VASTHOUDMODUS',
-        'hold_target': 'Vasthoud-doel:', 'hold_type': 'Vasthoud-type:', 'hold_duration': 'Duur (sec):',
-        'pause_interval': 'Pauze (sec):', 'status_stopped': 'Status: GESTOPT', 'status_active': 'Status: ACTIEF',
-        'click_to_set': 'Klik om in te stellen', 'press_key_mouse': '>> DRUK OP EEN TOETS / MUIS <<', 'press_hotkey': '>> DRUK OP SNELTOETS <<',
-        'continuous_hold': 'Continu vasthouden', 'interval_hold': 'Interval vasthouden'
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Klikdoel:', 'click_interval': 'Klikinterval (ms):',
+        'random_offset': 'Willekeurige afwijking (± ms):', 'hotkey': 'Sneltoets Start/Stop:', 'hold_mode': '✊ VASThoudMODUS',
+        'hold_target': 'Vasthouddoel:', 'hold_type': 'Type vasthouden:', 'hold_duration': 'Duur (sec):',
+        'pause_interval': 'Pauze-interval (sec):', 'status_stopped': 'Status: GESTOPT', 'status_active': 'Status: ACTIEF',
+        'click_to_set': 'Klik om instellen', 'press_key_mouse': '>> DRUK OP EEN TOETS / MUIS <<',
+        'press_hotkey': '>> DRUK OP DE SNELTOETS <<', 'continuous_hold': 'Continu vasthouden', 'interval_hold': 'Interval vasthouden',
+        'autoclicker_on': '⚡ Autoclicker: ACTIEF', 'autoclicker_off': '⚡ Autoclicker: GESTOPT',
+        'hold_on': '✊ Vasthoudmodus: ACTIEF', 'hold_off': '✊ Vasthoudmodus: GESTOPT'
     },
     'AR': {
         'settings': ' الإعدادات', 'settings_title': 'الإعدادات', 'app_settings': 'إعدادات التطبيق',
-        'always_on_top': 'دائماً في المقدمة', 'app_theme': 'المظهر:', 'app_lang': 'اللغة:', 'close': 'إغلاق',
+        'always_on_top': 'دائما في الأعلى', 'toast_notifications': 'إشعارات الشاشة',
+        'app_theme': 'مظهر التطبيق:', 'app_lang': 'اللغة:', 'close': 'إغلاق',
         'theme_dark': 'داكن', 'theme_light': 'فاتح', 'theme_system': 'النظام',
-        'autoclicker': '⚡ النقر التلقائي', 'click_target': 'هدف النقر:', 'click_interval': 'الفترة (مللي ثانية):',
-        'random_offset': 'تفاوت عشوائي (± مللي ثانية):', 'hotkey': 'مفتاح البدء/الإيقاف:', 'hold_mode': '✊ وضع الضغط المستمر',
-        'hold_target': 'هدف الضغط:', 'hold_type': 'نوع الضغط:', 'hold_duration': 'المدة (ثانية):',
-        'pause_interval': 'إيقاف مؤقت (ثانية):', 'status_stopped': 'الحالة: متوقف', 'status_active': 'الحالة: نشط',
-        'click_to_set': 'انقر للتعيين', 'press_key_mouse': '>> اضغط على أي زر أو الماوس <<', 'press_hotkey': '>> اضغط على مفتاح الاختصار <<',
-        'continuous_hold': 'ضغط مستمر', 'interval_hold': 'ضغط متقطع'
+        'autoclicker': '⚡ النقار التلقائي', 'click_target': 'هدف النقر:', 'click_interval': 'فاصل النقر (مللي ثانية):',
+        'random_offset': 'الإزاحة العشوائية (± مللي ثانية):', 'hotkey': 'مفتاح الاختصار لبدء/إيقاف:', 'hold_mode': '✊ وضع الضغط المستمر',
+        'hold_target': 'هدف الضغط:', 'hold_type': 'نوع الضغط:', 'hold_duration': 'المدة (ثواني):',
+        'pause_interval': 'مدة التوقف (ثواني):', 'status_stopped': 'الحالة: متوقف', 'status_active': 'الحالة: نشط',
+        'click_to_set': 'انقر للتعيين', 'press_key_mouse': '>> اضغط على أي مفتاح / ماوس <<',
+        'press_hotkey': '>> اضغط على مفتاح الاختصار <<', 'continuous_hold': 'ضغط مستمر', 'interval_hold': 'ضغط بفاصل زمني',
+        'autoclicker_on': '⚡ النقار التلقائي: نشط', 'autoclicker_off': '⚡ النقار التلقائي: متوقف',
+        'hold_on': '✊ وضع الضغط المستمر: نشط', 'hold_off': '✊ وضع الضغط المستمر: متوقف'
     },
     'HI': {
-        'settings': ' सेटिंग्स', 'settings_title': 'सेटिंग्स', 'app_settings': 'ऐप सेटिंग्स',
-        'always_on_top': 'हमेशा ऊपर रखें', 'app_theme': 'थीम:', 'app_lang': 'भाषा:', 'close': 'बंद करें',
+        'settings': ' सेटिंग्स', 'settings_title': 'सेटिंग्स', 'app_settings': 'एप्लिकेशन सेटिंग्स',
+        'always_on_top': 'हमेशा ऊपर रखें', 'toast_notifications': 'स्क्रीन सूचनाएं',
+        'app_theme': 'ऐप थीम:', 'app_lang': 'भाषा:', 'close': 'बंद करें',
         'theme_dark': 'डार्क', 'theme_light': 'लाइट', 'theme_system': 'सिस्टम',
-        'autoclicker': '⚡ ऑटोक्लीकर', 'click_target': 'क्लिक लक्ष्य:', 'click_interval': 'अंतराल (ms):',
-        'random_offset': 'यादृच्छिक अंतर (± ms):', 'hotkey': 'शुरू/रोकें हॉटकी:', 'hold_mode': '✊ होल्ड मोड',
+        'autoclicker': '⚡ ऑटो-क्लिकर', 'click_target': 'क्लिक लक्ष्य:', 'click_interval': 'क्लिक अंतराल (ms):',
+        'random_offset': 'यादृच्छिक अंतर (± ms):', 'hotkey': 'स्टार्ट/स्टॉप हॉटकी:', 'hold_mode': '✊ होल्ड मोड',
         'hold_target': 'होल्ड लक्ष्य:', 'hold_type': 'होल्ड प्रकार:', 'hold_duration': 'अवधि (सेकंड):',
-        'pause_interval': 'विराम (सेकंड):', 'status_stopped': 'स्थिति: रुका हुआ', 'status_active': 'स्थिति: सक्रिय',
-        'click_to_set': 'सेट करने के लिए क्लिक करें', 'press_key_mouse': '>> कोई कुंजी या माउस दबाएं <<', 'press_hotkey': '>> हॉटकी दबाएं <<',
-        'continuous_hold': 'निरंतर होल्ड', 'interval_hold': 'अंतराल होल्ड'
+        'pause_interval': 'विराम अंतराल (सेकंड):', 'status_stopped': 'स्थिति: रुका हुआ', 'status_active': 'स्थिति: सक्रिय',
+        'click_to_set': 'सेट करने के लिए क्लिक करें', 'press_key_mouse': '>> कोई कुंजी / माउस दबाएं <<',
+        'press_hotkey': '>> हॉटकी दबाएं <<', 'continuous_hold': 'निरंतर होल्ड', 'interval_hold': 'अंतराल होल्ड',
+        'autoclicker_on': '⚡ ऑटो-क्लिकर: सक्रिय', 'autoclicker_off': '⚡ ऑटो-क्लिकर: रुका हुआ',
+        'hold_on': '✊ होल्ड मोड: सक्रिय', 'hold_off': '✊ होल्ड मोड: रुका हुआ'
     },
     'VI': {
         'settings': ' Cài đặt', 'settings_title': 'Cài đặt', 'app_settings': 'Cài đặt ứng dụng',
-        'always_on_top': 'Luôn trên cùng', 'app_theme': 'Giao diện:', 'app_lang': 'Ngôn ngữ:', 'close': 'Đóng',
+        'always_on_top': 'Luôn trên cùng', 'toast_notifications': 'Thông báo màn hình',
+        'app_theme': 'Giao diện:', 'app_lang': 'Ngôn ngữ:', 'close': 'Đóng',
         'theme_dark': 'Tối', 'theme_light': 'Sáng', 'theme_system': 'Hệ thống',
         'autoclicker': '⚡ TỰ ĐỘNG CLICK', 'click_target': 'Mục tiêu click:', 'click_interval': 'Khoảng thời gian (ms):',
-        'random_offset': 'Độ lệch ngẫu nhiên (± ms):', 'hotkey': 'Phím tắt Bắt đầu/Dừng:', 'hold_mode': '✊ CHẾ ĐỘ GIỮ PHÍM',
-        'hold_target': 'Mục tiêu giữ:', 'hold_type': 'Loại giữ phím:', 'hold_duration': 'Thời gian giữ (giây):',
-        'pause_interval': 'Tạm dừng (giây):', 'status_stopped': 'Trạng thái: ĐÃ DỪNG', 'status_active': 'Trạng thái: HOẠT ĐỘNG',
-        'click_to_set': 'Nhấp để cài đặt', 'press_key_mouse': '>> NHẤN PHÍM BẤT KỲ / CHUỘT <<', 'press_hotkey': '>> NHẤN PHÍM TẮT <<',
-        'continuous_hold': 'Giữ liên tục', 'interval_hold': 'Giữ theo khoảng'
+        'random_offset': 'Độ lệch ngẫu nhiên (± ms):', 'hotkey': 'Phím tắt Bắt đầu/Dừng:', 'hold_mode': '✊ CHẾ ĐỘ GIỮ',
+        'hold_target': 'Mục tiêu giữ:', 'hold_type': 'Loại giữ:', 'hold_duration': 'Thời gian giữ (giây):',
+        'pause_interval': 'Thời gian tạm dừng (giây):', 'status_stopped': 'Trạng thái: ĐÃ DỪNG', 'status_active': 'Trạng thái: ĐANG HOẠT ĐỘNG',
+        'click_to_set': 'Nhấp để thiết lập', 'press_key_mouse': '>> NHẤN PHÍM BẤT KỲ / CHUỘT <<',
+        'press_hotkey': '>> NHẤN PHÍM TẮT <<', 'continuous_hold': 'Giữ liên tục', 'interval_hold': 'Giữ theo khoảng thời gian',
+        'autoclicker_on': '⚡ Tự động click: ĐANG HOẠT ĐỘNG', 'autoclicker_off': '⚡ Tự động click: ĐÃ DỪNG',
+        'hold_on': '✊ Chế độ giữ: ĐANG HOẠT ĐỘNG', 'hold_off': '✊ Chế độ giữ: ĐÃ DỪNG'
     },
     'TH': {
         'settings': ' การตั้งค่า', 'settings_title': 'การตั้งค่า', 'app_settings': 'การตั้งค่าแอปพลิเคชัน',
-        'always_on_top': 'แสดงอยู่ด้านบนเสมอ', 'app_theme': 'ธีม:', 'app_lang': 'ภาษา:', 'close': 'ปิด',
-        'theme_dark': 'มืด', 'theme_light': 'สว่าง', 'theme_system': 'ระบบ',
-        'autoclicker': '⚡ ออโต้คลิกเกอร์', 'click_target': 'เป้าหมายการคลิก:', 'click_interval': 'ช่วงเวลา (ms):',
-        'random_offset': 'ค่าเบี่ยงเบน (± ms):', 'hotkey': 'ปุ่มลัด เริ่ม/หยุด:', 'hold_mode': '✊ โหมดกดค้าง',
-        'hold_target': 'เป้าหมายการกดค้าง:', 'hold_type': 'รูปแบบการกดค้าง:', 'hold_duration': 'ระยะเวลากด (วินาที):',
-        'pause_interval': 'หยุดพัก (วินาที):', 'status_stopped': 'สถานะ: หยุดทำงาน', 'status_active': 'สถานะ: กำลังทำงาน',
-        'click_to_set': 'คลิกเพื่อตั้งค่า', 'press_key_mouse': '>> กดปุ่มใดก็ได้ หรือคลิกเมาส์ <<', 'press_hotkey': '>> กดปุ่มลัด <<',
-        'continuous_hold': 'กดค้างต่อเนื่อง', 'interval_hold': 'กดค้างเป็นระยะ'
+        'always_on_top': 'อยู่บนสุดเสมอ', 'toast_notifications': 'การแจ้งเตือนบนหน้าจอ',
+        'app_theme': 'ธีมแอป:', 'app_lang': 'ภาษา:', 'close': 'ปิด',
+        'theme_dark': 'มืด', 'theme_light': 'สว่าง', 'theme_system': 'ตามระบบ',
+        'autoclicker': '⚡ โปรแกรมคลิกออโต้', 'click_target': 'เป้าหมายการคลิก:', 'click_interval': 'ระยะเวลาคลิก (ms):',
+        'random_offset': 'การสุ่มเบี่ยงเบน (± ms):', 'hotkey': 'ปุ่มลัดเริ่ม/หยุด:', 'hold_mode': '✊ โหมดกดค้าง',
+        'hold_target': 'เป้าหมายการกดค้าง:', 'hold_type': 'ประเภทการกดค้าง:', 'hold_duration': 'ระยะเวลากดค้าง (วินาที):',
+        'pause_interval': 'ระยะเวลาหยุดพัก (วินาที):', 'status_stopped': 'สถานะ: หยุดทำงาน', 'status_active': 'สถานะ: กำลังทำงาน',
+        'click_to_set': 'คลิกเพื่อตั้งค่า', 'press_key_mouse': '>> กดปุ่มใดๆ / เมาส์ <<',
+        'press_hotkey': '>> กดปุ่มลัด <<', 'continuous_hold': 'กดค้างต่อเนื่อง', 'interval_hold': 'กดค้างเป็นจังหวะ',
+        'autoclicker_on': '⚡ คลิกออโต้: กำลังทำงาน', 'autoclicker_off': '⚡ คลิกออโต้: หยุดทำงาน',
+        'hold_on': '✊ โหมดกดค้าง: กำลังทำงาน', 'hold_off': '✊ โหมดกดค้าง: หยุดทำงาน'
     },
     'ID': {
         'settings': ' Pengaturan', 'settings_title': 'Pengaturan', 'app_settings': 'Pengaturan Aplikasi',
-        'always_on_top': 'Selalu di atas', 'app_theme': 'Tema:', 'app_lang': 'Bahasa:', 'close': 'Tutup',
+        'always_on_top': 'Selalu di Atas', 'toast_notifications': 'Notifikasi Layar',
+        'app_theme': 'Tema Aplikasi:', 'app_lang': 'Bahasa:', 'close': 'Tutup',
         'theme_dark': 'Gelap', 'theme_light': 'Terang', 'theme_system': 'Sistem',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Target Klik:', 'click_interval': 'Interval (ms):',
-        'random_offset': 'Variasi Acak (± ms):', 'hotkey': 'Pintasan Mulai/Berhenti:', 'hold_mode': '✊ MODE TAHAN',
-        'hold_target': 'Target Tahan:', 'hold_type': 'Jenis Tahan:', 'hold_duration': 'Durasi (detik):',
-        'pause_interval': 'Jeda (detik):', 'status_stopped': 'Status: BERHENTI', 'status_active': 'Status: AKTIF',
-        'click_to_set': 'Klik untuk mengatur', 'press_key_mouse': '>> TEKAN TOMBOL / TETIKUS <<', 'press_hotkey': '>> TEKAN TOMBOL PINTASAN <<',
-        'continuous_hold': 'Tahan Terus', 'interval_hold': 'Tahan Berinterval'
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Target Klik:', 'click_interval': 'Interval Klik (ms):',
+        'random_offset': 'Deviasi Acak (± ms):', 'hotkey': 'Tombol Pintas Mulai/Henti:', 'hold_mode': '✊ MODE TAHAN',
+        'hold_target': 'Target Tahan:', 'hold_type': 'Tipe Tahan:', 'hold_duration': 'Durasi (detik):',
+        'pause_interval': 'Interval Jeda (detik):', 'status_stopped': 'Status: BERHENTI', 'status_active': 'Status: AKTIF',
+        'click_to_set': 'Klik untuk Mengatur', 'press_key_mouse': '>> TEKAN TOMBOL / TETIKUS <<',
+        'press_hotkey': '>> TEKAN TOMBOL PINTAS <<', 'continuous_hold': 'Tahan Terus Menerus', 'interval_hold': 'Tahan Berjeda',
+        'autoclicker_on': '⚡ Autoclicker: AKTIF', 'autoclicker_off': '⚡ Autoclicker: BERHENTI',
+        'hold_on': '✊ Mode Tahan: AKTIF', 'hold_off': '✊ Mode Tahan: BERHENTI'
     },
     'CS': {
         'settings': ' Nastavení', 'settings_title': 'Nastavení', 'app_settings': 'Nastavení aplikace',
-        'always_on_top': 'Vždy navrchu', 'app_theme': 'Motiv:', 'app_lang': 'Jazyk:', 'close': 'Zavřít',
+        'always_on_top': 'Vždy navrchu', 'toast_notifications': 'Oznámení na obrazovce',
+        'app_theme': 'Motiv aplikace:', 'app_lang': 'Jazyk:', 'close': 'Zavřít',
         'theme_dark': 'Tmavý', 'theme_light': 'Světlý', 'theme_system': 'Systémový',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Cíl kliknutí:', 'click_interval': 'Interval (ms):',
-        'random_offset': 'Náhodná odchylka (± ms):', 'hotkey': 'Klávesa Start/Stop:', 'hold_mode': '✊ REŽIM DRŽENÍ',
-        'hold_target': 'Cíl držení:', 'hold_type': 'Typ držení:', 'hold_duration': 'Doba (sec):',
-        'pause_interval': 'Pauza (sec):', 'status_stopped': 'Stav: ZASTAVENO', 'status_active': 'Stav: AKTIVNÍ',
-        'click_to_set': 'Klikněte pro nastavení', 'press_key_mouse': '>> STISKNĚTE KLÁVESU / MYŠ <<', 'press_hotkey': '>> STISKNĚTE KLÁVESU <<',
-        'continuous_hold': 'Souvislé držení', 'interval_hold': 'Intervalové držení'
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Cíl kliknutí:', 'click_interval': 'Interval kliknutí (ms):',
+        'random_offset': 'Náhodná odchylka (± ms):', 'hotkey': 'Klávesová zkratka Start/Stop:', 'hold_mode': '✊ REŽIM DRŽENÍ',
+        'hold_target': 'Cíl držení:', 'hold_type': 'Typ držení:', 'hold_duration': 'Doba trvání (sec):',
+        'pause_interval': 'Interval pauzy (sec):', 'status_stopped': 'Stav: ZASTAVENO', 'status_active': 'Stav: AKTIVNÍ',
+        'click_to_set': 'Kliknutím nastavte', 'press_key_mouse': '>> STISKNĚTE KLÁVESU / MYŠ <<',
+        'press_hotkey': '>> STISKNĚTE ZKRATKU <<', 'continuous_hold': 'Nepřetržité držení', 'interval_hold': 'Intervalové držení',
+        'autoclicker_on': '⚡ Autoclicker: AKTIVNÍ', 'autoclicker_off': '⚡ Autoclicker: ZASTAVENO',
+        'hold_on': '✊ Režim držení: AKTIVNÍ', 'hold_off': '✊ Režim držení: ZASTAVENO'
     },
     'HU': {
         'settings': ' Beállítások', 'settings_title': 'Beállítások', 'app_settings': 'Alkalmazás beállításai',
-        'always_on_top': 'Mindig felül', 'app_theme': 'Téma:', 'app_lang': 'Nyelv:', 'close': 'Bezárás',
+        'always_on_top': 'Mindig felül', 'toast_notifications': 'Képernyőértesítések',
+        'app_theme': 'Alkalmazás témája:', 'app_lang': 'Nyelv:', 'close': 'Bezárás',
         'theme_dark': 'Sötét', 'theme_light': 'Világos', 'theme_system': 'Rendszer',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Kattintás célpontja:', 'click_interval': 'Intervallum (ms):',
-        'random_offset': 'Véletlenszerű eltérés (± ms):', 'hotkey': 'Indítás/Leállítás billentyű:', 'hold_mode': '✊ NYOMVATARTÁSI MÓD',
-        'hold_target': 'Nyomvatartás célpontja:', 'hold_type': 'Nyomvatartás típusa:', 'hold_duration': 'Időtartam (mp):',
-        'pause_interval': 'Szünet (mp):', 'status_stopped': 'Állapot: LEÁLLÍTVA', 'status_active': 'Állapot: AKTÍV',
-        'click_to_set': 'Kattints a beállításhoz', 'press_key_mouse': '>> NYOMJ MEG EGY BILLENTYŰT / EGÉR <<', 'press_hotkey': '>> NYOMD MEG A GYORSBILLENTYŰT <<',
-        'continuous_hold': 'Folyamatos nyomvatartás', 'interval_hold': 'Szakaszos nyomvatartás'
+        'autoclicker': '⚡ AUTOKLIKKELŐ', 'click_target': 'Kattintási cél:', 'click_interval': 'Kattintási intervallum (ms):',
+        'random_offset': 'Véletlenszerű eltérés (± ms):', 'hotkey': 'Indítás/Leállítás gyorsbillentyű:', 'hold_mode': '✊ TARTÁSI MÓD',
+        'hold_target': 'Tartási cél:', 'hold_type': 'Tartás típusa:', 'hold_duration': 'Időtartam (mp):',
+        'pause_interval': 'Szünet intervallum (mp):', 'status_stopped': 'Állapot: LEÁLLÍTVA', 'status_active': 'Állapot: AKTÍV',
+        'click_to_set': 'Kattintson a beállításhoz', 'press_key_mouse': '>> NYOMJON MEG EGY BILLENTYŰT / EGÉR <<',
+        'press_hotkey': '>> NYOMJA MEG A GYORSBILLENTYŰT <<', 'continuous_hold': 'Folyamatos tartás', 'interval_hold': 'Intervallumos tartás',
+        'autoclicker_on': '⚡ Autoklikkelő: AKTÍV', 'autoclicker_off': '⚡ Autoklikkelő: LEÁLLÍTVA',
+        'hold_on': '✊ Tartási mód: AKTÍV', 'hold_off': '✊ Tartási mód: LEÁLLÍTVA'
     },
     'RO': {
         'settings': ' Setări', 'settings_title': 'Setări', 'app_settings': 'Setările aplicației',
-        'always_on_top': 'Mereu deasupra', 'app_theme': 'Temă:', 'app_lang': 'Limbă:', 'close': 'Închide',
+        'always_on_top': 'Mereu deasupra', 'toast_notifications': 'Notificări pe ecran',
+        'app_theme': 'Tema aplicației:', 'app_lang': 'Limbă:', 'close': 'Închide',
         'theme_dark': 'Întunecat', 'theme_light': 'Luminos', 'theme_system': 'Sistem',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Țintă clic:', 'click_interval': 'Interval (ms):',
-        'random_offset': 'Abatere aleatorie (± ms):', 'hotkey': 'Tastă Pornire/Oprire:', 'hold_mode': '✊ MOD MENȚINERE',
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Țintă clic:', 'click_interval': 'Interval clic (ms):',
+        'random_offset': 'Abatere aleatorie (± ms):', 'hotkey': 'Tastă rapidă Start/Stop:', 'hold_mode': '✊ MOD MENȚINERE',
         'hold_target': 'Țintă menținere:', 'hold_type': 'Tip menținere:', 'hold_duration': 'Durată (sec):',
-        'pause_interval': 'Pauză (sec):', 'status_stopped': 'Stare: OPRIT', 'status_active': 'Stare: ACTIV',
-        'click_to_set': 'Apasă pentru a seta', 'press_key_mouse': '>> APASĂ O TASTĂ / MAUSUL <<', 'press_hotkey': '>> APASĂ TASTA RAPIDĂ <<',
-        'continuous_hold': 'Menținere continuă', 'interval_hold': 'Menținere la intervale'
+        'pause_interval': 'Interval pauză (sec):', 'status_stopped': 'Stare: OPRIT', 'status_active': 'Stare: ACTIV',
+        'click_to_set': 'Clic pentru a seta', 'press_key_mouse': '>> APĂSAȚI O TASTĂ / MOUSE <<',
+        'press_hotkey': '>> APĂSAȚI TASTA RAPIDĂ <<', 'continuous_hold': 'Menținere continuă', 'interval_hold': 'Menținere la intervale',
+        'autoclicker_on': '⚡ Autoclicker: ACTIV', 'autoclicker_off': '⚡ Autoclicker: OPRIT',
+        'hold_on': '✊ Mod menținere: ACTIV', 'hold_off': '✊ Mod menținere: OPRIT'
     },
     'SV': {
-        'settings': ' Inställningar', 'settings_title': 'Inställningar', 'app_settings': 'Applikationsinställningar',
-        'always_on_top': 'Alltid överst', 'app_theme': 'Tema:', 'app_lang': 'Språk:', 'close': 'Stäng',
+        'settings': ' Inställningar', 'settings_title': 'Inställningar', 'app_settings': 'Programinställningar',
+        'always_on_top': 'Alltid överst', 'toast_notifications': 'Skärmaviseringar',
+        'app_theme': 'Programtema:', 'app_lang': 'Språk:', 'close': 'Stäng',
         'theme_dark': 'Mörkt', 'theme_light': 'Ljust', 'theme_system': 'System',
-        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Klickmål:', 'click_interval': 'Intervall (ms):',
-        'random_offset': 'Slumpmässig avvikelse (± ms):', 'hotkey': 'Start/Stopp Snabbknapp:', 'hold_mode': '✊ HÅLL-LÄGE',
-        'hold_target': 'Håll-mål:', 'hold_type': 'Håll-typ:', 'hold_duration': 'Varaktighet (sek):',
-        'pause_interval': 'Paus (sek):', 'status_stopped': 'Status: STOPPAD', 'status_active': 'Status: AKTIV',
-        'click_to_set': 'Klicka för att ställa in', 'press_key_mouse': '>> TRYCK PÅ EN TANGENT / MUS <<', 'press_hotkey': '>> TRYCK PÅ SNABBKNAPP <<',
-        'continuous_hold': 'Kontinuerlig hållning', 'interval_hold': 'Intervallhållning'
+        'autoclicker': '⚡ AUTOCLICKER', 'click_target': 'Klickmål:', 'click_interval': 'Klickintervall (ms):',
+        'random_offset': 'Slumpmässig avvikelse (± ms):', 'hotkey': 'Snabbknapp Start/Stopp:', 'hold_mode': '✊ HÅLLLÄGE',
+        'hold_target': 'Hållmål:', 'hold_type': 'Hålltyp:', 'hold_duration': 'Varaktighet (sek):',
+        'pause_interval': 'Pausintervall (sek):', 'status_stopped': 'Status: STOPPAD', 'status_active': 'Status: AKTIV',
+        'click_to_set': 'Klicka för att ställa in', 'press_key_mouse': '>> TRYCK PÅ EN KNAPP / MUS <<',
+        'press_hotkey': '>> TRYCK PÅ SNABBKNAPPEN <<', 'continuous_hold': 'Kontinuerlig hållning', 'interval_hold': 'Intervallhållning',
+        'autoclicker_on': '⚡ Autoclicker: AKTIV', 'autoclicker_off': '⚡ Autoclicker: STOPPAD',
+        'hold_on': '✊ Hållläge: AKTIVT', 'hold_off': '✊ Hållläge: STOPPAD'
     }
 }
 
 
-# Adaptive gear icon generation with two-tier cache
 def create_gear_icon(size=(16, 16)):
     global _GEAR_ICON_CACHE
     if _GEAR_ICON_CACHE is not None:
@@ -415,7 +516,7 @@ def create_gear_icon(size=(16, 16)):
         draw.ellipse([center - hole_r, center - hole_r, center + hole_r, center + hole_r], fill=(0, 0, 0, 0))
         return img
 
-    img_light_mode = draw_gear("#0F172A")
+    img_light_mode = draw_gear("#334155")
     img_dark_mode = draw_gear("#F3F4F6")
 
     try:
@@ -428,7 +529,6 @@ def create_gear_icon(size=(16, 16)):
     return _GEAR_ICON_CACHE
 
 
-# RU to EN keyboard mapping
 RU_TO_EN = {
     'й': 'Q', 'ц': 'W', 'у': 'E', 'к': 'R', 'е': 'T', 'н': 'Y', 'г': 'U', 'ш': 'I', 'щ': 'O', 'з': 'P', 'х': '[', 'ъ': ']',
     'ф': 'A', 'ы': 'S', 'в': 'D', 'а': 'F', 'п': 'G', 'р': 'H', 'о': 'J', 'л': 'K', 'д': 'L', 'ж': ';', 'э': "'",
@@ -489,50 +589,54 @@ class SettingsWindow(ctk.CTkToplevel):
         super().__init__(parent)
         self.parent = parent
         self.title(parent.tr('settings_title'))
-        self.geometry("340x280")
+        self.geometry("340x310")
         self.resizable(False, False)
         self.attributes("-topmost", True)
+        self.configure(fg_color=("#CBD5E1", "#1E1F22"))
 
         set_window_icon(self)
         disable_maximize_button(self)
         self.grid_columnconfigure(0, weight=1)
 
-        self.title_lbl = ctk.CTkLabel(self, text=parent.tr('app_settings'), font=("Arial", 16, "bold"), text_color=("#0F172A", "#F3F4F6"))
-        self.title_lbl.pack(pady=12)
+        self.title_lbl = ctk.CTkLabel(self, text=parent.tr('app_settings'), font=("Arial", 16, "bold"), text_color=("#1E293B", "#F3F4F6"))
+        self.title_lbl.pack(pady=10)
 
         self.topmost_var = ctk.BooleanVar(value=parent.is_topmost)
-        self.topmost_cb = ctk.CTkCheckBox(self, text=parent.tr('always_on_top'), variable=self.topmost_var, command=self._toggle_topmost, text_color=("#0F172A", "#F3F4F6"))
-        self.topmost_cb.pack(pady=8, anchor="w", padx=30)
+        self.topmost_cb = ctk.CTkCheckBox(self, text=parent.tr('always_on_top'), variable=self.topmost_var, command=self._toggle_topmost, text_color=("#1E293B", "#F3F4F6"))
+        self.topmost_cb.pack(pady=4, anchor="w", padx=30)
 
-        self.theme_lbl = ctk.CTkLabel(self, text=parent.tr('app_theme'), font=("Arial", 12), text_color=("#0F172A", "#F3F4F6"))
-        self.theme_lbl.pack(pady=(6, 2), anchor="w", padx=30)
+        self.toast_var = ctk.BooleanVar(value=parent.enable_toast)
+        self.toast_cb = ctk.CTkCheckBox(self, text=parent.tr('toast_notifications'), variable=self.toast_var, command=self._toggle_toast, text_color=("#1E293B", "#F3F4F6"))
+        self.toast_cb.pack(pady=4, anchor="w", padx=30)
 
-        # Localized theme choices
+        self.theme_lbl = ctk.CTkLabel(self, text=parent.tr('app_theme'), font=("Arial", 11), text_color=("#1E293B", "#F3F4F6"))
+        self.theme_lbl.pack(pady=(6, 1), anchor="w", padx=30)
+
         theme_choices = [parent.tr('theme_dark'), parent.tr('theme_light'), parent.tr('theme_system')]
         self.theme_opt = ctk.CTkOptionMenu(
             self, values=theme_choices, command=self._apply_theme,
-            fg_color=("#E2E8F0", "#2B2D31"), button_color=("#CBD5E1", "#3F4147"),
-            button_hover_color=("#94A3B8", "#4E5058"), text_color=("#0F172A", "#F3F4F6")
+            fg_color=("#FFFFFF", "#2B2D31"), button_color=("#CBD5E1", "#3F4147"),
+            button_hover_color=("#94A3B8", "#4E5058"), text_color=("#1E293B", "#F3F4F6")
         )
         self.theme_opt.set(parent.get_localized_theme_name(parent.appearance_mode))
-        self.theme_opt.pack(pady=2, fill="x", padx=30)
+        self.theme_opt.pack(pady=1, fill="x", padx=30)
 
-        self.lang_lbl = ctk.CTkLabel(self, text=parent.tr('app_lang'), font=("Arial", 12), text_color=("#0F172A", "#F3F4F6"))
-        self.lang_lbl.pack(pady=(8, 2), anchor="w", padx=30)
+        self.lang_lbl = ctk.CTkLabel(self, text=parent.tr('app_lang'), font=("Arial", 11), text_color=("#1E293B", "#F3F4F6"))
+        self.lang_lbl.pack(pady=(6, 1), anchor="w", padx=30)
 
         self.lang_opt = ctk.CTkOptionMenu(
             self, values=list(LANG_MAPPING.keys()), command=self._apply_language,
-            fg_color=("#E2E8F0", "#2B2D31"), button_color=("#CBD5E1", "#3F4147"),
-            button_hover_color=("#94A3B8", "#4E5058"), text_color=("#0F172A", "#F3F4F6")
+            fg_color=("#FFFFFF", "#2B2D31"), button_color=("#CBD5E1", "#3F4147"),
+            button_hover_color=("#94A3B8", "#4E5058"), text_color=("#1E293B", "#F3F4F6")
         )
         self.lang_opt.set(CODE_TO_LANG.get(parent.language, "English"))
-        self.lang_opt.pack(pady=2, fill="x", padx=30)
+        self.lang_opt.pack(pady=1, fill="x", padx=30)
 
         self.close_btn = ctk.CTkButton(
             self, text=parent.tr('close'), command=self.destroy,
             fg_color=("#2563EB", "#3B82F6"), hover_color=("#1D4ED8", "#2563EB"), text_color="#FFFFFF"
         )
-        self.close_btn.pack(pady=15)
+        self.close_btn.pack(pady=14)
 
     def _toggle_topmost(self):
         val = self.topmost_var.get()
@@ -540,8 +644,11 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent.attributes("-topmost", val)
         self.parent._save_config()
 
+    def _toggle_toast(self):
+        self.parent.enable_toast = self.toast_var.get()
+        self.parent._save_config()
+
     def _apply_theme(self, choice):
-        # Convert localized theme choice back to internal CTk theme string
         internal_theme = self.parent.parse_theme_from_choice(choice)
         self.parent.appearance_mode = internal_theme
         ctk.set_appearance_mode(internal_theme)
@@ -552,15 +659,14 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent.language = lang_code
         self.parent.update_ui_language()
 
-        # Update Settings Window text
         self.title(self.parent.tr('settings_title'))
         self.title_lbl.configure(text=self.parent.tr('app_settings'))
         self.topmost_cb.configure(text=self.parent.tr('always_on_top'))
+        self.toast_cb.configure(text=self.parent.tr('toast_notifications'))
         self.theme_lbl.configure(text=self.parent.tr('app_theme'))
         self.lang_lbl.configure(text=self.parent.tr('app_lang'))
         self.close_btn.configure(text=self.parent.tr('close'))
 
-        # Dynamically update theme dropdown values to new language
         new_theme_choices = [self.parent.tr('theme_dark'), self.parent.tr('theme_light'), self.parent.tr('theme_system')]
         self.theme_opt.configure(values=new_theme_choices)
         self.theme_opt.set(self.parent.get_localized_theme_name(self.parent.appearance_mode))
@@ -572,7 +678,6 @@ class EasyClicker(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # DEFAULT LANGUAGE IS ENGLISH
         self.language = "EN"
         self.title("EasyClicker")
         self.geometry("820x490")
@@ -581,9 +686,15 @@ class EasyClicker(ctk.CTk):
         self.minsize(270, 230)
         self.resizable(True, True)
 
+        self.configure(fg_color=("#CBD5E1", "#1E1F22"))
+
         self.is_topmost = False
-        self.appearance_mode = "Dark"
+        self.enable_toast = True
+
         self.settings_window = None
+        self._active_toast = None
+
+        self.appearance_mode = "Dark"
 
         self.mouse_ctrl = MouseController()
         self.kb_ctrl = KeyboardController()
@@ -612,8 +723,7 @@ class EasyClicker(ctk.CTk):
         self.after(10, self._deferred_init)
 
     def tr(self, key):
-        """ Get localized string with fallback to EN """
-        return TRANSLATIONS.get(self.language, TRANSLATIONS['EN']).get(key, '')
+        return TRANSLATIONS.get(self.language, TRANSLATIONS.get('EN', {})).get(key, '')
 
     def get_localized_theme_name(self, internal_mode):
         mode = str(internal_mode).lower()
@@ -629,6 +739,47 @@ class EasyClicker(ctk.CTk):
         elif choice == self.tr('theme_system'):
             return "System"
         return "Dark"
+
+    def show_toast_notification(self, text, color):
+        if not self.enable_toast:
+            return
+
+        def _create_toast():
+            try:
+                if self._active_toast and self._active_toast.winfo_exists():
+                    self._active_toast.destroy()
+
+                toast = ctk.CTkToplevel(self)
+                toast.overrideredirect(True)
+                toast.attributes("-topmost", True)
+                toast.configure(fg_color="#18181B")
+
+                work_w, work_h = get_windows_workarea()
+                if not work_w or not work_h:
+                    work_w = self.winfo_screenwidth()
+                    work_h = self.winfo_screenheight() - 40
+
+                toast_w, toast_h = 220, 36
+                x_pos = max(10, work_w - toast_w - 12)
+                y_pos = max(10, work_h - toast_h - 12)
+
+                toast.geometry(f"{toast_w}x{toast_h}+{x_pos}+{y_pos}")
+
+                frame = ctk.CTkFrame(toast, corner_radius=6, fg_color="#18181B", border_color="#27272A", border_width=1)
+                frame.pack(fill="both", expand=True)
+
+                accent = ctk.CTkFrame(frame, width=4, corner_radius=2, fg_color=color)
+                accent.pack(side="left", fill="y", padx=(6, 8), pady=6)
+
+                lbl = ctk.CTkLabel(frame, text=text, font=("Arial", 11, "bold"), text_color="#F4F4F5", anchor="w")
+                lbl.pack(side="left", fill="both", expand=True, pady=2)
+
+                self._active_toast = toast
+                toast.after(1500, lambda: toast.destroy() if toast.winfo_exists() else None)
+            except Exception:
+                pass
+
+        self.after(0, _create_toast)
 
     def _deferred_init(self):
         set_window_icon(self)
@@ -648,11 +799,11 @@ class EasyClicker(ctk.CTk):
 
         self.settings_btn = ctk.CTkButton(
             self.header, text=self.tr('settings'), image=gear_img, compound="left",
-            width=90, fg_color=("#E2E8F0", "#2B2D31"), hover_color=("#CBD5E1", "#3F4147"),
-            text_color=("#0F172A", "#F3F4F6"), command=self._open_settings
+            width=90, fg_color=("#FFFFFF", "#2B2D31"), hover_color=("#F1F5F9", "#3F4147"),
+            text_color=("#1E293B", "#F3F4F6"), command=self._open_settings
         )
 
-        self.title_label = ctk.CTkLabel(self.header, text="EasyClicker", font=("Arial", 16, "bold"), text_color=("#0F172A", "#F3F4F6"))
+        self.title_label = ctk.CTkLabel(self.header, text="EasyClicker", font=("Arial", 16, "bold"), text_color=("#1E293B", "#F3F4F6"))
 
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
 
@@ -664,13 +815,13 @@ class EasyClicker(ctk.CTk):
         }
 
         # === AUTOCLICKER ===
-        self.ac_frame = ctk.CTkFrame(self.main_container, corner_radius=12, fg_color=("#FFFFFF", "#2B2D31"), border_color=("#CBD5E1", "#3F4147"), border_width=1)
+        self.ac_frame = ctk.CTkFrame(self.main_container, corner_radius=12, fg_color=("#E2E8F0", "#2B2D31"), border_color=("#94A3B8", "#3F4147"), border_width=1)
         self.ac_frame.grid_columnconfigure(0, weight=1)
 
         self.ac_title_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('autoclicker'), font=("Arial", 15, "bold"), text_color=("#1D4ED8", "#60A5FA"))
         self.ac_title_lbl.grid(row=0, column=0, pady=(10, 5))
 
-        self.ac_target_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('click_target'), font=("Arial", 11, "bold"), text_color=("#0F172A", "#F3F4F6"))
+        self.ac_target_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('click_target'), font=("Arial", 11, "bold"), text_color=("#1E293B", "#F3F4F6"))
         self.ac_target_lbl.grid(row=1, column=0, pady=(2, 1), sticky="w", padx=15)
 
         self.ac_target_btn = ctk.CTkButton(
@@ -680,27 +831,27 @@ class EasyClicker(ctk.CTk):
         )
         self.ac_target_btn.grid(row=2, column=0, padx=15, pady=3, sticky="ew")
 
-        self.ac_interval_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('click_interval'), font=("Arial", 10), text_color=("#334155", "#CBD5E1"))
+        self.ac_interval_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('click_interval'), font=("Arial", 10), text_color=("#475569", "#CBD5E1"))
         self.ac_interval_lbl.grid(row=3, column=0, pady=(4, 0), sticky="w", padx=15)
 
         self.ac_interval = ctk.CTkEntry(self.ac_frame, placeholder_text="100", **entry_kwargs)
         self.ac_interval.insert(0, "100")
         self.ac_interval.grid(row=4, column=0, padx=15, pady=1, sticky="ew")
 
-        self.ac_offset_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('random_offset'), font=("Arial", 10), text_color=("#334155", "#CBD5E1"))
+        self.ac_offset_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('random_offset'), font=("Arial", 10), text_color=("#475569", "#CBD5E1"))
         self.ac_offset_lbl.grid(row=5, column=0, pady=(4, 0), sticky="w", padx=15)
 
         self.ac_offset = ctk.CTkEntry(self.ac_frame, placeholder_text="20", **entry_kwargs)
         self.ac_offset.insert(0, "20")
         self.ac_offset.grid(row=6, column=0, padx=15, pady=1, sticky="ew")
 
-        self.ac_hotkey_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('hotkey'), font=("Arial", 11, "bold"), text_color=("#0F172A", "#F3F4F6"))
+        self.ac_hotkey_lbl = ctk.CTkLabel(self.ac_frame, text=self.tr('hotkey'), font=("Arial", 11, "bold"), text_color=("#1E293B", "#F3F4F6"))
         self.ac_hotkey_lbl.grid(row=7, column=0, pady=(6, 1), sticky="w", padx=15)
 
         self.ac_hotkey_btn = ctk.CTkButton(
             self.ac_frame, text=f"[{self.ac_hotkey['display']}]  ({self.tr('click_to_set')})",
-            fg_color=("#E2E8F0", "#3F4147"), hover_color=("#CBD5E1", "#4E5058"),
-            text_color=("#0F172A", "#F3F4F6"), command=lambda: self._start_binding('ac_hotkey')
+            fg_color=("#FFFFFF", "#3F4147"), hover_color=("#F1F5F9", "#4E5058"),
+            text_color=("#1E293B", "#F3F4F6"), command=lambda: self._start_binding('ac_hotkey')
         )
         self.ac_hotkey_btn.grid(row=8, column=0, padx=15, pady=3, sticky="ew")
 
@@ -708,13 +859,13 @@ class EasyClicker(ctk.CTk):
         self.ac_status_lbl.grid(row=99, column=0, pady=(6, 8))
 
         # === HOLD MODE ===
-        self.hold_frame = ctk.CTkFrame(self.main_container, corner_radius=12, fg_color=("#FFFFFF", "#2B2D31"), border_color=("#CBD5E1", "#3F4147"), border_width=1)
+        self.hold_frame = ctk.CTkFrame(self.main_container, corner_radius=12, fg_color=("#E2E8F0", "#2B2D31"), border_color=("#94A3B8", "#3F4147"), border_width=1)
         self.hold_frame.grid_columnconfigure(0, weight=1)
 
         self.hold_title_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hold_mode'), font=("Arial", 15, "bold"), text_color=("#059669", "#34D399"))
         self.hold_title_lbl.grid(row=0, column=0, pady=(10, 5))
 
-        self.hold_target_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hold_target'), font=("Arial", 11, "bold"), text_color=("#0F172A", "#F3F4F6"))
+        self.hold_target_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hold_target'), font=("Arial", 11, "bold"), text_color=("#1E293B", "#F3F4F6"))
         self.hold_target_lbl.grid(row=1, column=0, pady=(2, 1), sticky="w", padx=15)
 
         self.hold_target_btn = ctk.CTkButton(
@@ -724,13 +875,13 @@ class EasyClicker(ctk.CTk):
         )
         self.hold_target_btn.grid(row=2, column=0, padx=15, pady=3, sticky="ew")
 
-        self.hold_mode_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hold_type'), font=("Arial", 10), text_color=("#334155", "#CBD5E1"))
+        self.hold_mode_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hold_type'), font=("Arial", 10), text_color=("#475569", "#CBD5E1"))
         self.hold_mode_lbl.grid(row=3, column=0, pady=(4, 0), sticky="w", padx=15)
 
         self.hold_mode = ctk.CTkOptionMenu(
             self.hold_frame, values=[self.tr('continuous_hold'), self.tr('interval_hold')],
-            fg_color=("#E2E8F0", "#059669"), button_color=("#CBD5E1", "#047857"),
-            button_hover_color=("#94A3B8", "#065F46"), text_color=("#0F172A", "#FFFFFF"),
+            fg_color=("#FFFFFF", "#059669"), button_color=("#CBD5E1", "#047857"),
+            button_hover_color=("#94A3B8", "#065F46"), text_color=("#1E293B", "#FFFFFF"),
             command=self._on_hold_mode_change
         )
         self.hold_mode.set(self.tr('continuous_hold'))
@@ -740,13 +891,13 @@ class EasyClicker(ctk.CTk):
         self.fields_frame.grid(row=5, column=0, padx=15, pady=1, sticky="ew")
         self.fields_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.lbl_hold_time = ctk.CTkLabel(self.fields_frame, text=self.tr('hold_duration'), font=("Arial", 9), text_color=("#334155", "#CBD5E1"))
+        self.lbl_hold_time = ctk.CTkLabel(self.fields_frame, text=self.tr('hold_duration'), font=("Arial", 9), text_color=("#475569", "#CBD5E1"))
         self.lbl_hold_time.grid(row=0, column=0, sticky="w")
         self.hold_time_entry = ctk.CTkEntry(self.fields_frame, placeholder_text="2.0", **entry_kwargs)
         self.hold_time_entry.insert(0, "2.0")
         self.hold_time_entry.grid(row=1, column=0, padx=(0, 3), sticky="ew")
 
-        self.lbl_pause_time = ctk.CTkLabel(self.fields_frame, text=self.tr('pause_interval'), font=("Arial", 9), text_color=("#334155", "#CBD5E1"))
+        self.lbl_pause_time = ctk.CTkLabel(self.fields_frame, text=self.tr('pause_interval'), font=("Arial", 9), text_color=("#475569", "#CBD5E1"))
         self.lbl_pause_time.grid(row=0, column=1, sticky="w")
         self.hold_pause_entry = ctk.CTkEntry(self.fields_frame, placeholder_text="1.0", **entry_kwargs)
         self.hold_pause_entry.insert(0, "1.0")
@@ -754,13 +905,13 @@ class EasyClicker(ctk.CTk):
 
         self._update_hold_fields_visual(enabled=False)
 
-        self.hold_hotkey_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hotkey'), font=("Arial", 11, "bold"), text_color=("#0F172A", "#F3F4F6"))
+        self.hold_hotkey_lbl = ctk.CTkLabel(self.hold_frame, text=self.tr('hotkey'), font=("Arial", 11, "bold"), text_color=("#1E293B", "#F3F4F6"))
         self.hold_hotkey_lbl.grid(row=7, column=0, pady=(6, 1), sticky="w", padx=15)
 
         self.hold_hotkey_btn = ctk.CTkButton(
             self.hold_frame, text=f"[{self.hold_hotkey['display']}]  ({self.tr('click_to_set')})",
-            fg_color=("#E2E8F0", "#3F4147"), hover_color=("#CBD5E1", "#4E5058"),
-            text_color=("#0F172A", "#F3F4F6"), command=lambda: self._start_binding('hold_hotkey')
+            fg_color=("#FFFFFF", "#3F4147"), hover_color=("#F1F5F9", "#4E5058"),
+            text_color=("#1E293B", "#F3F4F6"), command=lambda: self._start_binding('hold_hotkey')
         )
         self.hold_hotkey_btn.grid(row=8, column=0, padx=15, pady=3, sticky="ew")
 
@@ -771,7 +922,6 @@ class EasyClicker(ctk.CTk):
         self._apply_grid_state("side_by_side")
 
     def update_ui_language(self):
-        """ Dynamically updates all text labels when language changes """
         self.settings_btn.configure(text=self.tr('settings'))
         self.ac_title_lbl.configure(text=self.tr('autoclicker'))
         self.ac_target_lbl.configure(text=self.tr('click_target'))
@@ -890,8 +1040,8 @@ class EasyClicker(ctk.CTk):
 
     def _update_hold_fields_visual(self, enabled: bool):
         st = "normal" if enabled else "disabled"
-        bg = ("#FFFFFF", "#1E1F22") if enabled else ("#E2E8F0", "#232428")
-        txt = ("#0F172A", "#F3F4F6") if enabled else ("#64748B", "#94A3B8")
+        bg = ("#FFFFFF", "#1E1F22") if enabled else ("#CBD5E1", "#232428")
+        txt = ("#1E293B", "#F3F4F6") if enabled else ("#64748B", "#94A3B8")
         border = ("#94A3B8", "#3F4147") if enabled else ("#CBD5E1", "#2B2D31")
 
         self.hold_time_entry.configure(state=st, fg_color=bg, text_color=txt, border_color=border)
@@ -908,6 +1058,7 @@ class EasyClicker(ctk.CTk):
             'hold_pause': self.hold_pause_entry.get(),
             'hold_mode': self.hold_mode.get(),
             'is_topmost': self.is_topmost,
+            'enable_toast': self.enable_toast,
             'appearance_mode': self.appearance_mode,
             'ac_target': serialize_input(self.ac_target),
             'hold_target': serialize_input(self.hold_target),
@@ -945,6 +1096,8 @@ class EasyClicker(ctk.CTk):
             if 'is_topmost' in cfg:
                 self.is_topmost = cfg['is_topmost']
                 self.attributes("-topmost", self.is_topmost)
+            if 'enable_toast' in cfg:
+                self.enable_toast = cfg['enable_toast']
             if 'appearance_mode' in cfg:
                 self.appearance_mode = cfg['appearance_mode']
                 ctk.set_appearance_mode(self.appearance_mode)
@@ -1031,8 +1184,12 @@ class EasyClicker(ctk.CTk):
         if not hk:
             return False
 
-        if hasattr(pressed_key, 'vk') and hasattr(hk, 'vk'):
-            return pressed_key.vk == hk.vk
+        p_vk = getattr(pressed_key, 'vk', None)
+        h_vk = getattr(hk, 'vk', None)
+
+        if p_vk is not None and h_vk is not None:
+            return p_vk == h_vk
+
         if hasattr(pressed_key, 'char') and pressed_key.char:
             char = RU_TO_EN.get(pressed_key.char, pressed_key.char).lower()
             return char == str(hk).lower()
@@ -1043,8 +1200,8 @@ class EasyClicker(ctk.CTk):
         color_map = {
             'ac_target': "#2563EB",
             'hold_target': "#059669",
-            'ac_hotkey': ("#E2E8F0", "#3F4147"),
-            'hold_hotkey': ("#E2E8F0", "#3F4147")
+            'ac_hotkey': ("#FFFFFF", "#3F4147"),
+            'hold_hotkey': ("#FFFFFF", "#3F4147")
         }
         btn_map = {
             'ac_target': self.ac_target_btn,
@@ -1061,7 +1218,7 @@ class EasyClicker(ctk.CTk):
             return
 
         setattr(self, mode, data)
-        txt_color = "#FFFFFF" if mode in ('ac_target', 'hold_target') else ("#0F172A", "#F3F4F6")
+        txt_color = "#FFFFFF" if mode in ('ac_target', 'hold_target') else ("#1E293B", "#F3F4F6")
         btn_map[mode].configure(text=f"[{data['display']}]  ({self.tr('click_to_set')})", fg_color=color_map[mode], text_color=txt_color)
 
         self.binding_mode = None
@@ -1075,6 +1232,10 @@ class EasyClicker(ctk.CTk):
         txt, color = (self.tr('status_active'), ("#16A34A", "#10B981")) if self.clicker_active else (self.tr('status_stopped'), ("#DC2626", "#EF4444"))
         self.ac_status_lbl.configure(text=txt, text_color=color)
 
+        toast_msg = self.tr('autoclicker_on') if self.clicker_active else self.tr('autoclicker_off')
+        toast_color = "#10B981" if self.clicker_active else "#EF4444"
+        self.show_toast_notification(toast_msg, toast_color)
+
         if self.clicker_active:
             threading.Thread(target=self._autoclick_loop, daemon=True).start()
 
@@ -1083,6 +1244,10 @@ class EasyClicker(ctk.CTk):
         self.hold_active = not self.hold_active
         txt, color = (self.tr('status_active'), ("#16A34A", "#10B981")) if self.hold_active else (self.tr('status_stopped'), ("#DC2626", "#EF4444"))
         self.hold_status_lbl.configure(text=txt, text_color=color)
+
+        toast_msg = self.tr('hold_on') if self.hold_active else self.tr('hold_off')
+        toast_color = "#10B981" if self.hold_active else "#EF4444"
+        self.show_toast_notification(toast_msg, toast_color)
 
         if self.hold_active:
             threading.Thread(target=self._hold_loop, daemon=True).start()
@@ -1152,5 +1317,3 @@ class EasyClicker(ctk.CTk):
 if __name__ == "__main__":
     app = EasyClicker()
     app.mainloop()
-
-# pyinstaller --onedir --noconsole --icon=icon.ico --add-data "icon.ico;." --collect-all customtkinter --name "EasyClicker" main.py
